@@ -630,7 +630,7 @@ def _load_tex_image(path, non_color=False):
     return _tex_img_cache[key]
 
 _tex_mats = {}
-def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0.40, 0.32), rough_mult=1.0):
+def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0.40, 0.32), rough_mult=1.0, tint=None):
     """Real image-texture Principled BSDF material (PolyHaven CC0 photo
     textures) — Geometry(Position, WORLD-space — same choice mood_valheim.py
     already proved for its own noise nodes, see _add_bump's docstring, so a
@@ -643,9 +643,21 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
     Rotation rotates world Z into the V slot so vertical grain/coursing
     reads correctly on upright surfaces — an Image Texture node only ever
     samples 2 of the 3 input vector components, so which 2 axes matters).
-    Cached by (key, projection, scale) — every call site sharing a `key`
-    reuses one material, exactly like mat()'s own cache."""
-    cache_key = (key, projection, scale)
+    Cached by (key, projection, scale, tint) — every call site sharing all
+    four reuses one material, exactly like mat()'s own cache.
+
+    `tint` (Judgment Day SUSPECT #2 fix, 2026-07-21): an (r,g,b) color —
+    normally the caller's own jittered biome color (jitter_tone()'s output)
+    — multiplied into the Base Color via a ColorMix node (MULTIPLY, subtle
+    0.45 factor so the photo texture's own detail stays dominant) so that
+    jitter_tone()'s per-house +/- tone jitter, which used to be dead code
+    for any material routed here (the cache never varied by color, so every
+    house shared one identical material), now has a real, if subtle, visual
+    effect. Including `tint` in the cache key means two different jittered
+    colors — or a deliberately darker/warmer tint like the thatch ridge
+    cap's — genuinely produce two distinct materials instead of collapsing
+    to one shared instance."""
+    cache_key = (key, projection, scale, tint)
     if cache_key in _tex_mats:
         return _tex_mats[cache_key]
     m = bpy.data.materials.new("tex_%s_%s" % (key, projection))
@@ -690,7 +702,37 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
         tex_d.image = diff_img
         tex_d.extension = 'REPEAT'
         nt.links.new(mapping.outputs["Vector"], tex_d.inputs["Vector"])
-        nt.links.new(tex_d.outputs["Color"], bsdf.inputs["Base Color"])
+        base_color_out = tex_d.outputs["Color"]
+        if tint is not None:
+            # Subtle MULTIPLY tint (see this function's own `tint` docstring
+            # section) — same defensive by-socket-type lookup pattern
+            # mood_valheim.py's compositor Mix nodes already use, since
+            # ShaderNodeMix's RGBA sockets share a display name and can only
+            # be told apart by iteration order / type.
+            tint_mix = nt.nodes.new("ShaderNodeMix")
+            tint_mix.data_type = 'RGBA'
+            tint_mix.blend_type = 'MULTIPLY'
+            a_sock = b_sock = factor_sock = result_sock = None
+            for s in tint_mix.inputs:
+                if s.type == 'RGBA' and a_sock is None:
+                    a_sock = s
+                elif s.type == 'RGBA' and b_sock is None:
+                    b_sock = s
+                elif s.type == 'VALUE' and s.name == 'Factor' and factor_sock is None:
+                    factor_sock = s
+            for o in tint_mix.outputs:
+                if o.type == 'RGBA':
+                    result_sock = o
+                    break
+            if a_sock is not None and b_sock is not None and result_sock is not None:
+                if factor_sock is not None:
+                    factor_sock.default_value = 0.45
+                b_sock.default_value = (*tint, 1.0)
+                nt.links.new(base_color_out, a_sock)
+                base_color_out = result_sock
+            else:
+                print("[village_gen] mat_textured: Mix node RGBA sockets not found — skipping tint (%s)" % key)
+        nt.links.new(base_color_out, bsdf.inputs["Base Color"])
 
     rough_img = _load_tex_image(_tex_path(slug, "rough"), non_color=True)
     if rough_img is not None:
@@ -728,21 +770,48 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
 GROUND_TEX_SLUG = {"pradera": "sparse_grass", "bosque": "sparse_grass", "hielo": "snow_02"}
 PLAZA_TEX_SLUG = {"pradera": "cobblestone_01", "bosque": "cobblestone_01", "hielo": "cobblestone_02"}
 PATH_TEX_SLUG = {"pradera": "brown_mud_dry", "bosque": "brown_mud_dry", "hielo": "rocky_trail"}
+# WOOD/WOOD_DARK biome routing (Judgment Day SUSPECT #2 fix, 2026-07-21):
+# same GROUND_TEX_SLUG pattern, so a future biome-specific plank/bark photo
+# is a one-line dict edit, not a rearchitecture. All 3 biomes currently
+# share the one downloaded slug per family (only brown_planks_03/
+# bark_brown_01 exist in _textures/ today) — the ROUTING is biome-aware
+# even though the VALUES aren't distinct yet; the per-house jitter_tone()
+# tint (see mat_textured's `tint` param) is what makes wood visually
+# distinct per house/biome in the meantime.
+WOOD_TEX_SLUG = {"pradera": "brown_planks_03", "bosque": "brown_planks_03", "hielo": "brown_planks_03"}
+WOOD_DARK_TEX_SLUG = {"pradera": "bark_brown_01", "bosque": "bark_brown_01", "hielo": "bark_brown_01"}
 
 USE_REAL_TEXTURES = True  # flip off for a fast geometry-only iteration pass
 
 _mats = {}
 def mat(name, color, rough=0.85):
+    # Judgment Day SUSPECT #2 fix (2026-07-21): every USE_REAL_TEXTURES
+    # branch below now passes `tint=color` into mat_textured() (see its own
+    # docstring) — `color` used to be silently dropped here, so
+    # jitter_tone()'s per-house tone jitter was dead code for wood/thatch,
+    # and wood was NOT biome-keyed (pradera/bosque/hielo shared one texture
+    # verbatim, unlike ground/plaza/path's GROUND_TEX_SLUG-style routing).
+    # "roof_thatch_dark" (the ridge cap) is checked BEFORE the generic
+    # "roof_thatch" prefix match (it also starts with "roof_thatch") and
+    # gets its OWN mat_textured `key` ("thatch_dark" vs "thatch") so the
+    # cap no longer collapses onto the exact same shared material as the
+    # base thatch — its ROOF_THATCH_DARK tint keeps it visibly
+    # warmer/darker even under the shared photo texture.
     key = (name, color, rough)
     if key not in _mats:
         if USE_REAL_TEXTURES and name == "ground":
+            # Out of scope for this fix — ground is already correctly
+            # biome-keyed (GROUND_TEX_SLUG) and untouched by the mat()
+            # color-drop bug this pass fixes for wood/wood_dark/thatch.
             _mats[key] = mat_textured("ground_" + BIOME, GROUND_TEX_SLUG[BIOME], scale=5.0, projection='top')
+        elif USE_REAL_TEXTURES and name == "roof_thatch_dark":
+            _mats[key] = mat_textured("thatch_dark", "thatch_roof_angled", scale=1.4, projection='top', tint=color)
         elif USE_REAL_TEXTURES and name.startswith("roof_thatch"):
-            _mats[key] = mat_textured("thatch", "thatch_roof_angled", scale=1.4, projection='top')
+            _mats[key] = mat_textured("thatch", "thatch_roof_angled", scale=1.4, projection='top', tint=color)
         elif USE_REAL_TEXTURES and name == "wood":
-            _mats[key] = mat_textured("wood_plank", "brown_planks_03", scale=1.6, projection='side')
+            _mats[key] = mat_textured("wood_" + BIOME, WOOD_TEX_SLUG[BIOME], scale=1.6, projection='side', tint=color)
         elif USE_REAL_TEXTURES and name == "wood_dark":
-            _mats[key] = mat_textured("wood_bark", "bark_brown_01", scale=1.0, projection='side_local')
+            _mats[key] = mat_textured("wood_dark_" + BIOME, WOOD_DARK_TEX_SLUG[BIOME], scale=1.0, projection='side_local', tint=color)
         else:
             m = bpy.data.materials.new(name)
             m.use_nodes = True
