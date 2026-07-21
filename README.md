@@ -66,6 +66,15 @@ un post en compositor (glare/bloom + viñeta + grado de color derivado de los
 antes de renderizar, activada por defecto — pasar `off` como 8vo argumento
 posicional del CLI (`... -- <biome> <out> <seed> ... <mood>`) para desactivarla.
 
+## Creation Protocol — reasoning ANTES de construir
+
+`CREATION_PROTOCOL.md` — gate previo a `RECETAS.md`/`preflight_destructivo`: identifica la
+categoría real del objeto, investiga referencias visuales (multi-fuente) Y lógica funcional
+(bisagras, soportes, material según economía, tamaño según contenido) y fija dimensiones
+contra el maniquí de 1.80m — ANTES de escribir bpy. Incluye auto-crítica multi-ángulo antes de
+presentar. Nace del Judgment Day de `village_gen.py`/`mood_valheim.py` (v1→v12, 2026-07-18) —
+leerlo junto a `RECETAS.md` antes de generar un asset/módulo nuevo.
+
 ## Próximos pasos
 
 1. Escribir el preset REALISTA en `lookdev/` (hoy solo existe toon).
