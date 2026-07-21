@@ -1,3 +1,4 @@
 _out/
+_textures/
 __pycache__/
 *.pyc

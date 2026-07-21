@@ -580,16 +580,176 @@ TERRAIN_HALF = RING_R * 1.4 + 4.0 + 8.0
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 
+# ── v12 pivot: REAL CC0 image textures (PolyHaven) ─────────────────────────
+# Root cause (dungeon-party/village-gen-summary, 2026-07-20, Joan's verdict:
+# "todo esta con colores solidos... son solo colores solidos"): 11 rounds of
+# mood_valheim.py's procedural noise-based color/bump variation CANNOT
+# reproduce real material structure — directional wood grain, stone joint
+# lines, woven/laid straw — because generic noise has no knowledge of those
+# patterns. Real materials need real photographed IMAGE textures. This adds
+# that path alongside the existing procedural mat(): mat() now transparently
+# ROUTES a handful of canonical material names — the ones used for the
+# largest, most visually-dominant surfaces (ground, walls, dark structural
+# wood/stakes/posts, thatch) — to a cached textured material instead of a
+# flat color, with ZERO changes needed at any of the ~40 call sites already
+# scattered across this file (mat("wood", ...) / mat("wood_dark", ...) /
+# mat("ground", ...) / mat("roof_thatch", ...)) — the cheapest-correct fix
+# per this file's own convention (see build_poor_footing's docstring for the
+# same reasoning applied elsewhere). mood_valheim.py's procedural albedo/bump
+# injection already no-ops on any material whose Base Color/Normal input is
+# already linked (see its own idempotency checks in _add_bump/
+# _add_albedo_noise) so it automatically backs off these textured materials
+# with zero extra guard code here — textured and procedural layers coexist
+# by construction on the SAME shared mat() cache, never double-applied.
+TEX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_textures")
+
+def _tex_path(slug, kind):
+    """kind in {'diff', 'nor', 'rough'}. Returns None (safe no-op — NEVER a
+    crash) if the file wasn't downloaded; mat_textured() falls back to a
+    flat Base Color in that case so a missing texture degrades to the OLD
+    flat-color look instead of an ugly grey/pink default-material placeholder."""
+    for ext in (".jpg", ".png"):
+        p = os.path.join(TEX_DIR, "%s_%s%s" % (slug, kind, ext))
+        if os.path.exists(p):
+            return p
+    return None
+
+_tex_img_cache = {}
+def _load_tex_image(path, non_color=False):
+    if path is None:
+        return None
+    key = (path, non_color)
+    if key not in _tex_img_cache:
+        img = bpy.data.images.load(path, check_existing=True)
+        if non_color:
+            try:
+                img.colorspace_settings.name = 'Non-Color'
+            except Exception:
+                pass
+        _tex_img_cache[key] = img
+    return _tex_img_cache[key]
+
+_tex_mats = {}
+def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0.40, 0.32), rough_mult=1.0):
+    """Real image-texture Principled BSDF material (PolyHaven CC0 photo
+    textures) — Geometry(Position, WORLD-space — same choice mood_valheim.py
+    already proved for its own noise nodes, see _add_bump's docstring, so a
+    shared material reads the same real-world grain size on a huge wall AND
+    a tiny picket) -> Mapping (scale = tile size in meters) -> Image Texture
+    -> Base Color (+ a Normal Map chain from the nor_gl map, + the Rough map
+    on Roughness when present, both Non-Color). `projection`: 'top'
+    (ground/roof-top: raw world X/Y drives U/V — correct for anything read
+    mostly from above) or 'side' (walls/posts/stakes: the Mapping node's
+    Rotation rotates world Z into the V slot so vertical grain/coursing
+    reads correctly on upright surfaces — an Image Texture node only ever
+    samples 2 of the 3 input vector components, so which 2 axes matters).
+    Cached by (key, projection, scale) — every call site sharing a `key`
+    reuses one material, exactly like mat()'s own cache."""
+    cache_key = (key, projection, scale)
+    if cache_key in _tex_mats:
+        return _tex_mats[cache_key]
+    m = bpy.data.materials.new("tex_%s_%s" % (key, projection))
+    m.use_nodes = True
+    nt = m.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (*fallback_color, 1.0)
+    bsdf.inputs["Roughness"].default_value = 0.9
+
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    inv = 1.0 / max(0.001, scale)
+    mapping.inputs["Scale"].default_value = (inv, inv, inv)
+    if projection in ('side', 'side_local'):
+        mapping.inputs["Rotation"].default_value = (math.radians(90.0), 0.0, 0.0)
+    if projection == 'side_local':
+        # DIAGONAL-STRUT FIX (v12 round-1 self-eyeball, destacamento render):
+        # world-space Position badly SHEARS the texture on anything that
+        # isn't roughly vertical (tower cross-braces, any strut()/oriented
+        # cone rotated off-axis) — sampling raw world X/Z along a diagonal
+        # member stretches the image unevenly across its length, since the
+        # mapping has no idea the object itself is tilted. TexCoord.Object
+        # (the object's OWN local space, unaffected by its world rotation)
+        # fixes this for any UNSCALED primitive — cylinder()/strut()/
+        # oriented_cone() bake their real-world size into the primitive call
+        # itself (radius=r, depth=h) rather than via object.scale, so local
+        # Z already IS the object's true-length axis regardless of which
+        # way it's rotated in world space. Reserved for "wood_dark" (posts/
+        # stakes/beams/braces — mat()'s routing below); "wood" (wall boxes,
+        # which DO use object.scale to size) stays on world-space 'side' —
+        # see _load_tex_image's caller for why (object-space on a SCALED
+        # box re-introduces the exact same-frequency-different-sizes
+        # mismatch mood_valheim's own bump pass already had to fix once).
+        tex_coord = nt.nodes.new("ShaderNodeTexCoord")
+        nt.links.new(tex_coord.outputs["Object"], mapping.inputs["Vector"])
+    else:
+        geo = nt.nodes.new("ShaderNodeNewGeometry")
+        nt.links.new(geo.outputs["Position"], mapping.inputs["Vector"])
+
+    diff_img = _load_tex_image(_tex_path(slug, "diff"), non_color=False)
+    if diff_img is not None:
+        tex_d = nt.nodes.new("ShaderNodeTexImage")
+        tex_d.image = diff_img
+        tex_d.extension = 'REPEAT'
+        nt.links.new(mapping.outputs["Vector"], tex_d.inputs["Vector"])
+        nt.links.new(tex_d.outputs["Color"], bsdf.inputs["Base Color"])
+
+    rough_img = _load_tex_image(_tex_path(slug, "rough"), non_color=True)
+    if rough_img is not None:
+        tex_r = nt.nodes.new("ShaderNodeTexImage")
+        tex_r.image = rough_img
+        tex_r.extension = 'REPEAT'
+        nt.links.new(mapping.outputs["Vector"], tex_r.inputs["Vector"])
+        if rough_mult != 1.0:
+            rm = nt.nodes.new("ShaderNodeMath")
+            rm.operation = 'MULTIPLY'
+            rm.inputs[1].default_value = rough_mult
+            nt.links.new(tex_r.outputs["Color"], rm.inputs[0])
+            nt.links.new(rm.outputs["Value"], bsdf.inputs["Roughness"])
+        else:
+            nt.links.new(tex_r.outputs["Color"], bsdf.inputs["Roughness"])
+
+    norm_img = _load_tex_image(_tex_path(slug, "nor"), non_color=True)
+    if norm_img is not None:
+        tex_n = nt.nodes.new("ShaderNodeTexImage")
+        tex_n.image = norm_img
+        tex_n.extension = 'REPEAT'
+        nrm = nt.nodes.new("ShaderNodeNormalMap")
+        nt.links.new(mapping.outputs["Vector"], tex_n.inputs["Vector"])
+        nt.links.new(tex_n.outputs["Color"], nrm.inputs["Color"])
+        nt.links.new(nrm.outputs["Normal"], bsdf.inputs["Normal"])
+
+    _tex_mats[cache_key] = m
+    return m
+
+
+# Per-biome texture picks (v12 PoE pivot) — hielo gets its OWN snow/stone
+# set (snow_02 ground, rocky_trail path, cobblestone_02 plaza), never the
+# pradera cobblestone_01/thatch verbatim (Joan: hielo needs a distinct cold
+# read, not a recolored copy of the warm biome's materials).
+GROUND_TEX_SLUG = {"pradera": "sparse_grass", "bosque": "sparse_grass", "hielo": "snow_02"}
+PLAZA_TEX_SLUG = {"pradera": "cobblestone_01", "bosque": "cobblestone_01", "hielo": "cobblestone_02"}
+PATH_TEX_SLUG = {"pradera": "brown_mud_dry", "bosque": "brown_mud_dry", "hielo": "rocky_trail"}
+
+USE_REAL_TEXTURES = True  # flip off for a fast geometry-only iteration pass
+
 _mats = {}
 def mat(name, color, rough=0.85):
     key = (name, color, rough)
     if key not in _mats:
-        m = bpy.data.materials.new(name)
-        m.use_nodes = True
-        bsdf = m.node_tree.nodes["Principled BSDF"]
-        bsdf.inputs["Base Color"].default_value = (*color, 1.0)
-        bsdf.inputs["Roughness"].default_value = rough
-        _mats[key] = m
+        if USE_REAL_TEXTURES and name == "ground":
+            _mats[key] = mat_textured("ground_" + BIOME, GROUND_TEX_SLUG[BIOME], scale=5.0, projection='top')
+        elif USE_REAL_TEXTURES and name.startswith("roof_thatch"):
+            _mats[key] = mat_textured("thatch", "thatch_roof_angled", scale=1.4, projection='top')
+        elif USE_REAL_TEXTURES and name == "wood":
+            _mats[key] = mat_textured("wood_plank", "brown_planks_03", scale=1.6, projection='side')
+        elif USE_REAL_TEXTURES and name == "wood_dark":
+            _mats[key] = mat_textured("wood_bark", "bark_brown_01", scale=1.0, projection='side_local')
+        else:
+            m = bpy.data.materials.new(name)
+            m.use_nodes = True
+            bsdf = m.node_tree.nodes["Principled BSDF"]
+            bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+            bsdf.inputs["Roughness"].default_value = rough
+            _mats[key] = m
     return _mats[key]
 
 def jitter_tone(rng, color, pct=0.07):
@@ -2534,7 +2694,12 @@ def build_path(p1, p2, width, rng, segs=14, wear=0.5):
     instead of every path sharing one flat tone/width regardless of
     destination."""
     tone = tuple(DIRT_PATH[i] * (1.0 - wear) + DIRT_PATH_WORN[i] * wear for i in range(3))
-    dirt = mat("dirt_path_w%.2f" % wear, tone, rough=0.95)
+    if USE_REAL_TEXTURES:
+        # v12 pivot: real dirt/mud (or hielo's rocky_trail) photo texture
+        # instead of a flat lerped tone — see mat_textured() top docstring.
+        dirt = mat_textured("path_" + BIOME, PATH_TEX_SLUG[BIOME], scale=2.2, projection='top')
+    else:
+        dirt = mat("dirt_path_w%.2f" % wear, tone, rough=0.95)
     ctrl = _desire_path_curve(p1, p2, rng)
     verts, faces, centerline = [], [], []
     prev = None
@@ -2561,11 +2726,19 @@ def build_path(p1, p2, width, rng, segs=14, wear=0.5):
     ob = mesh_obj("path_%d" % _next_id(), verts, faces, dirt)
     return ob, centerline
 
-def build_ground_patch(cx, cy, radius, rng, tone=DIRT_PATH_WORN, segs=14):
+def build_ground_patch(cx, cy, radius, rng, tone=DIRT_PATH_WORN, segs=14, surface="dirt"):
     """Trampled/worn circular ground patch (plaza dirt, mud around the
     well) — same terrain-following technique as build_path, a triangle fan
-    instead of a strip."""
-    patch_mat = mat("ground_patch_%.2f_%.2f_%.2f" % tone, tone, rough=0.95)
+    instead of a strip. `surface` ('dirt'|'cobblestone', v12 pivot) picks
+    the real texture family: 'cobblestone' for the plaza (PoE reference —
+    adoquin/paving with dark mossy joints, not flat trampled dirt), 'dirt'
+    (default, unchanged) for every other patch (well surrounds etc)."""
+    if USE_REAL_TEXTURES and surface == "cobblestone":
+        patch_mat = mat_textured("plaza_" + BIOME, PLAZA_TEX_SLUG[BIOME], scale=1.3, projection='top')
+    elif USE_REAL_TEXTURES:
+        patch_mat = mat_textured("path_" + BIOME, PATH_TEX_SLUG[BIOME], scale=2.2, projection='top')
+    else:
+        patch_mat = mat("ground_patch_%.2f_%.2f_%.2f" % tone, tone, rough=0.95)
     verts = [(cx, cy, terrain_h(cx, cy) + 0.02)]
     faces = []
     for i in range(segs):
@@ -3591,7 +3764,19 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
         variant = roll_weighted(rng, variant_weights)
         hsx = 2.3 + rng.uniform(-0.2, 0.4)
         hsy = 2.0 + rng.uniform(-0.2, 0.3)
-        facing_deg = rng.uniform(30, 60) * rng.choice((-1, 1)) if rng.random() < 0.40 else 0
+        # ROTATION BUG FIX (v12, Joan: "la casa sigue rotada como en 45deg",
+        # reported across MULTIPLE scenes/seeds, not seed-specific). Root
+        # cause: this range was rng.uniform(30, 60) — a jitter window that
+        # AVERAGES 45deg and was applied with zero relation to the house's
+        # neighbors or its own position (find_clustered_spot's returned
+        # angle `a` is discarded here, never fed into facing_deg). A single
+        # hut swung 30-60deg away from its axis-aligned neighbors doesn't
+        # read as "varied facade" (the intent, see house()'s facing_deg
+        # docstring) — it reads as one broken/mis-rotated building sitting
+        # in an otherwise axis-aligned row. Narrowed to a SUBTLE off-axis
+        # nudge (8-18deg) that still breaks the "grid of identical boxes"
+        # monotony without looking like a placement error.
+        facing_deg = rng.uniform(8, 18) * rng.choice((-1, 1)) if rng.random() < 0.40 else 0
         # Wider height jitter (PO v8 item 4 "bigger height variety between
         # buildings") — v7's +-0.1/0.2 range barely varied the roofline;
         # this spans roughly 2.05-3.0m so the skyline actually reads uneven.
@@ -3648,7 +3833,7 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
             path_polylines.append(poly)
             break
     # Trampled dirt plaza around the hearth.
-    build_ground_patch(plaza_x, plaza_y, 2.4, rng, tone=DIRT_PATH_WORN)
+    build_ground_patch(plaza_x, plaza_y, 2.4, rng, tone=DIRT_PATH_WORN, surface="cobblestone")
 
     # HANGING DECORATIONS (PO v8 item 3, retuned PO v8.1 item 2, PO v9 item 4
     # 2026-07-19) — strung between NEAREST-NEIGHBOR building pairs instead

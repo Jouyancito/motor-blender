@@ -118,7 +118,15 @@ def _tune_lights(scene, biome_style, rng):
             base_color[i] * (1.0 - warm_amt) + warm_target[i] * warm_amt for i in range(3)
         )
         key_sun.data.color = warm_color
-        key_sun.data.energy = base_energy * rng.uniform(1.10, 1.25)
+        # PoE GRADE (v12, Joan: "mas Path of Exile, menos animado" —
+        # village_poe_style/_synthesis.md: "el resto de la escena es FRIO Y
+        # OSCURO... contraste extremo, no el 'calido general' que tenemos
+        # ahora"). Was 1.10-1.25 (BOOSTED above the biome baseline, flat
+        # even daylight); pulled DOWN below baseline so the sun alone no
+        # longer evenly floods the whole village — torches/braziers/hearth
+        # (their own point lights + emissive boost below) become the
+        # dominant light POOLS instead of a uniform wash.
+        key_sun.data.energy = base_energy * rng.uniform(0.70, 0.85)
         # Preserve the existing azimuth (-35 deg, set by the caller) — only
         # the elevation/drama changes, so composition/shadow direction the
         # caller already tuned doesn't shift underneath it.
@@ -134,8 +142,12 @@ def _tune_lights(scene, biome_style, rng):
         fill_data = bpy.data.lights.new("mood_fill_sun", 'SUN')
         fill = bpy.data.objects.new("mood_fill_sun", fill_data)
         scene.collection.objects.link(fill)
-    fill_energy = base_energy * rng.uniform(0.12, 0.20)
-    fill.data.energy = max(0.05, fill_energy)
+    # PoE GRADE (v12): fill pulled down further too (was 0.12-0.20) — a
+    # colder, DARKER ambient is the whole point of the "tight warm pools
+    # against cold-dark surroundings" reference read, not just a cooler tint
+    # at the same brightness.
+    fill_energy = base_energy * rng.uniform(0.05, 0.09)
+    fill.data.energy = max(0.03, fill_energy)
     sky = biome_style.get("sky", (0.4, 0.5, 0.6))
     cool_target = (0.45, 0.62, 0.95)
     cool_amt = 0.55
@@ -144,6 +156,34 @@ def _tune_lights(scene, biome_style, rng):
     fill_az = key_az + math.radians(rng.uniform(130.0, 160.0))
     fill_elev = min(65.0, base_elev * rng.uniform(1.1, 1.4) + 10.0)
     fill.rotation_euler = (math.radians(90 - fill_elev), 0.0, fill_az)
+
+    # PoE GRADE (v12) — dim the World background strength too (the ambient
+    # sky-dome light every surface receives regardless of sun angle) so the
+    # darker key/fill above isn't offset by an unchanged flat ambient floor.
+    world = scene.world
+    if world is not None and world.use_nodes:
+        bg = world.node_tree.nodes.get("Background")
+        if bg is not None:
+            try:
+                cur = bg.inputs[1].default_value
+                bg.inputs[1].default_value = cur * rng.uniform(0.60, 0.75)
+            except Exception as e:
+                print("[mood_valheim] skipped world background dim (%s)" % e)
+
+
+def _tighten_light_pools(rng):
+    """PoE GRADE (v12) — boost every POINT light's energy (torches, braziers,
+    the hearth/campfire ember lights built by village_gen.py's
+    build_ember_light) so their pool of illumination reads as a genuinely
+    BRIGHT, TIGHT hotspot against the now-darker key/fill/ambient above,
+    instead of a weak glow that gets lost once the general scene dims.
+    Mirrors _boost_emissives' same-shaped light-side counterpart: the
+    material boost makes fire/window SURFACES read hot, this makes the
+    LIGHT they cast read as a real pool. Sun/Area lights untouched — this
+    is specifically the "torch against cold dark" contrast lever."""
+    for o in bpy.data.objects:
+        if o.type == 'LIGHT' and o.data.type == 'POINT':
+            o.data.energy = o.data.energy * rng.uniform(1.35, 1.65)
 
 
 def _boost_emissives(rng):
@@ -567,6 +607,29 @@ def _setup_compositor(scene, biome_style):
     else:
         print("[mood_valheim] no 'Color Gain' socket on ColorBalance — skipping color grade")
 
+    # PoE DESATURATION (v12, Joan: "mas Path of Exile, menos animado" —
+    # village_poe_style/_synthesis.md: "practicamente TODO desaturado...
+    # salvo el fuego"). Pulls overall saturation down hard on the graded
+    # image. Fire/window emissives still read vivid despite the flat
+    # saturation multiplier below because _boost_emissives (materials) +
+    # _tighten_light_pools (lights) already pushed their SOURCE brightness
+    # well past 1.0 — Filmic's highlight rolloff reads a very bright warm
+    # pixel as a hot glow regardless of the saturation knob, so the "cheap"
+    # global desaturation (not a luminance-masked selective one, which would
+    # need a much bigger node graph) still lands the "near-total desaturation
+    # except fire" read without the extra complexity/failure surface.
+    desat = nt.nodes.get("mood_desaturate")
+    if desat is None:
+        desat = nt.nodes.new("CompositorNodeHueSat")
+        desat.name = "mood_desaturate"
+    try:
+        desat.inputs["Saturation"].default_value = 0.42
+        desat.inputs["Hue"].default_value = 0.5  # 0.5 = no hue shift on this node's 0-1 wheel
+        desat.inputs["Value"].default_value = 1.0
+    except Exception as e:
+        print("[mood_valheim] skipped PoE desaturation (%s)" % e)
+        desat = None
+
     # MIST TINT (item 3, Atmosphere) — blend the graded image toward a
     # biome fog color, driven by the Mist render pass (0 near camera / 1 at
     # `mist_settings.depth`), remapped to a LOW cap so distance softens
@@ -607,10 +670,14 @@ def _setup_compositor(scene, biome_style):
     nt.links.new(ellipse.outputs["Mask"], blur.inputs["Image"])
     nt.links.new(blur.outputs["Image"], maprange.inputs["Value"])
 
-    # Chain: grade -> mist tint (if the Mist pass is available) -> vignette
-    # -> group output. Falls back to skipping the mist stage cleanly if the
-    # pass isn't there (e.g. use_pass_mist failed to stick on this build).
+    # Chain: grade -> [desaturate] -> mist tint (if the Mist pass is
+    # available) -> vignette -> group output. Falls back to skipping the
+    # mist stage cleanly if the pass isn't there (e.g. use_pass_mist failed
+    # to stick on this build); same fallback pattern for desaturation.
     pre_vig_output = grade.outputs["Image"]
+    if desat is not None:
+        nt.links.new(grade.outputs["Image"], desat.inputs["Image"])
+        pre_vig_output = desat.outputs["Image"]
     if mist_out is not None and mist_a is not None and mist_b is not None and mist_factor is not None:
         nt.links.new(mist_out, mist_maprange.inputs["Value"])
         nt.links.new(grade.outputs["Image"], mist_a)
@@ -657,6 +724,10 @@ def apply_mood(scene, biome_style):
         _boost_emissives(rng)
     except Exception as e:
         print("[mood_valheim] emissive-boost step failed (%s)" % e)
+    try:
+        _tighten_light_pools(rng)
+    except Exception as e:
+        print("[mood_valheim] light-pool tightening step failed (%s)" % e)
     try:
         _inject_albedo_variation(rng)
     except Exception as e:
