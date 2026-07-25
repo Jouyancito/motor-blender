@@ -123,24 +123,27 @@ def _tune_lights(scene, biome_style, rng):
     base_energy = float(biome_style.get("sun_energy", 2.0))
 
     if key_sun is not None:
-        # Lower + more dramatic elevation (bias down, never below ~8 deg so
-        # shadows stay readable instead of edge-on/black).
-        new_elev = max(8.0, base_elev * rng.uniform(0.62, 0.78))
+        # v14 GRADE (2026-07-23, Joan visual-bar review — the v12 pass above
+        # dimmed the sun/fill/ambient but the resulting render STILL read as
+        # flat bright noon (confirmed by an actual render-vs-render check,
+        # not assumed): 0.70-0.85x of a 2.6-energy biome sun is still ~1.9,
+        # plenty to flatten the whole village evenly. Pushed the whole
+        # hierarchy further down this pass so torches/braziers/hearth are
+        # unambiguously the brightest things in frame (§17.2.3 "luz en
+        # charcos... la luz plana de mediodia mata las sombras").
+        # Lower + more dramatic elevation (bias down further, never below
+        # ~7 deg so shadows stay readable instead of edge-on/black).
+        new_elev = max(7.0, base_elev * rng.uniform(0.42, 0.55))
         warm_target = (1.0, 0.62, 0.28)
         warm_amt = rng.uniform(0.20, 0.32)
         warm_color = tuple(
             base_color[i] * (1.0 - warm_amt) + warm_target[i] * warm_amt for i in range(3)
         )
         key_sun.data.color = warm_color
-        # PoE GRADE (v12, Joan: "mas Path of Exile, menos animado" —
-        # village_poe_style/_synthesis.md: "el resto de la escena es FRIO Y
-        # OSCURO... contraste extremo, no el 'calido general' que tenemos
-        # ahora"). Was 1.10-1.25 (BOOSTED above the biome baseline, flat
-        # even daylight); pulled DOWN below baseline so the sun alone no
-        # longer evenly floods the whole village — torches/braziers/hearth
-        # (their own point lights + emissive boost below) become the
-        # dominant light POOLS instead of a uniform wash.
-        key_sun.data.energy = base_energy * rng.uniform(0.70, 0.85)
+        # v14: 0.70-0.85x -> 0.30-0.42x baseline — the sun is now a dim,
+        # low, warm rim-light contributor, not the scene's dominant
+        # illumination; that job belongs to the point lights below.
+        key_sun.data.energy = base_energy * rng.uniform(0.30, 0.42)
         # Preserve the existing azimuth (-35 deg, set by the caller) — only
         # the elevation/drama changes, so composition/shadow direction the
         # caller already tuned doesn't shift underneath it.
@@ -156,12 +159,10 @@ def _tune_lights(scene, biome_style, rng):
         fill_data = bpy.data.lights.new("mood_fill_sun", 'SUN')
         fill = bpy.data.objects.new("mood_fill_sun", fill_data)
         scene.collection.objects.link(fill)
-    # PoE GRADE (v12): fill pulled down further too (was 0.12-0.20) — a
-    # colder, DARKER ambient is the whole point of the "tight warm pools
-    # against cold-dark surroundings" reference read, not just a cooler tint
-    # at the same brightness.
-    fill_energy = base_energy * rng.uniform(0.05, 0.09)
-    fill.data.energy = max(0.03, fill_energy)
+    # v14 (2026-07-23): fill pulled down further still (was 0.05-0.09) —
+    # same "still read flat noon" finding as the key sun above.
+    fill_energy = base_energy * rng.uniform(0.030, 0.055)
+    fill.data.energy = max(0.02, fill_energy)
     sky = biome_style.get("sky", (0.4, 0.5, 0.6))
     cool_target = (0.45, 0.62, 0.95)
     cool_amt = 0.55
@@ -171,18 +172,50 @@ def _tune_lights(scene, biome_style, rng):
     fill_elev = min(65.0, base_elev * rng.uniform(1.1, 1.4) + 10.0)
     fill.rotation_euler = (math.radians(90 - fill_elev), 0.0, fill_az)
 
-    # PoE GRADE (v12) — dim the World background strength too (the ambient
-    # sky-dome light every surface receives regardless of sun angle) so the
-    # darker key/fill above isn't offset by an unchanged flat ambient floor.
+    # v14 GRADE (2026-07-23, biggest single lever in this pass): the v12
+    # world-background fix only dimmed the EXISTING sky color's STRENGTH
+    # (0.60-0.75x) — that leaves the HUE exactly the biome's bright daytime
+    # blue (e.g. pradera's (0.55,0.65,0.75)), so even at reduced strength it
+    # still reads as a hazy bright sky, not dusk. §17.2.3 explicitly asks to
+    # "push sky/world color toward cool dusk" — that means shifting the
+    # COLOR toward a dark cool-indigo dusk tone, not just turning down the
+    # brightness knob on the same hue. Both levers now: (1) blend the actual
+    # Background COLOR toward a near-black cool indigo, (2) drop strength
+    # much further (was 0.60-0.75x -> 0.14-0.22x) so the ambient sky-dome
+    # light stops competing with torch/brazier/hearth point lights for
+    # "brightest thing in frame".
     world = scene.world
     if world is not None and world.use_nodes:
         bg = world.node_tree.nodes.get("Background")
         if bg is not None:
             try:
+                cur_col = tuple(bg.inputs[0].default_value)[:3]
+                dusk_target = (0.045, 0.065, 0.13)
+                dusk_amt = rng.uniform(0.55, 0.70)
+                dusk_col = tuple(
+                    cur_col[i] * (1.0 - dusk_amt) + dusk_target[i] * dusk_amt for i in range(3)
+                )
+                bg.inputs[0].default_value = (*dusk_col, 1.0)
+            except Exception as e:
+                print("[mood_valheim] skipped world background dusk-tint (%s)" % e)
+            try:
                 cur = bg.inputs[1].default_value
-                bg.inputs[1].default_value = cur * rng.uniform(0.60, 0.75)
+                bg.inputs[1].default_value = cur * rng.uniform(0.14, 0.22)
             except Exception as e:
                 print("[mood_valheim] skipped world background dim (%s)" % e)
+
+    # v14 — global exposure/contrast push (Filmic view transform). Dimming
+    # the light sources above darkens the SCENE; this darkens the IMAGE on
+    # top of that (uniform, before the filmic curve) so midtones read
+    # properly dark while the already-boosted fire/window emissives (see
+    # _boost_emissives/_tighten_light_pools below, both pushed well past
+    # 1.0 in scene-linear units) still clip bright through Filmic's
+    # highlight rolloff — this is the mechanism that makes fire read as
+    # "the warmest+brightest thing" rather than just "a slightly brighter
+    # patch of an already-bright image". A contrast LOOK on top makes
+    # shadows read as genuinely dark instead of a soft grey wash.
+    _safe_set(scene.view_settings, "exposure", -1.1, "view_settings.exposure")
+    _safe_set(scene.view_settings, "look", "Medium High Contrast", "view_settings.look (contrast)")
 
 
 def _tighten_light_pools(rng):
@@ -195,9 +228,14 @@ def _tighten_light_pools(rng):
     material boost makes fire/window SURFACES read hot, this makes the
     LIGHT they cast read as a real pool. Sun/Area lights untouched — this
     is specifically the "torch against cold dark" contrast lever."""
+    # v14: boosted further (was 1.35-1.65x) — the v14 global exposure pull
+    # (-1.1 EV, see _tune_lights) dims point lights by the same factor as
+    # everything else in the final image; this extra headroom keeps the
+    # torch/brazier/hearth pools reading as a genuinely bright hotspot
+    # rather than just "less dim than before, proportionally".
     for o in bpy.data.objects:
         if o.type == 'LIGHT' and o.data.type == 'POINT':
-            o.data.energy = o.data.energy * rng.uniform(1.35, 1.65)
+            o.data.energy = o.data.energy * rng.uniform(1.7, 2.1)
 
 
 def _boost_emissives(rng):
@@ -220,7 +258,9 @@ def _boost_emissives(rng):
             cur = strength_in.default_value
             if cur <= 0.0:
                 continue
-            strength_in.default_value = min(16.0, cur * rng.uniform(1.15, 1.35))
+            # v14: boosted further (was 1.15-1.35x), same exposure-headroom
+            # reasoning as _tighten_light_pools above.
+            strength_in.default_value = min(20.0, cur * rng.uniform(1.4, 1.7))
             col = color_in.default_value
             warm_amt = 0.12
             color_in.default_value = (
@@ -552,8 +592,14 @@ def _setup_compositor(scene, biome_style):
         glare.name = "mood_glare"
     glare.inputs["Type"].default_value = "Fog Glow"  # bloom-style glow, catches fire/window emissives
     glare.inputs["Quality"].default_value = "High"
-    glare.inputs["Threshold"].default_value = 0.9
-    glare.inputs["Strength"].default_value = 0.35  # subtle — glow, not a blown-out filter
+    # v14: threshold pulled down (0.9 -> 0.7) — the v14 exposure/ambient cuts
+    # above make the WHOLE image darker, so the old 0.9 threshold (tuned
+    # against a brighter base image) under-triggered; fire/window emissives
+    # are still individually way past either threshold (boosted well over
+    # 1.0 scene-linear by _boost_emissives), this just keeps the bloom
+    # equally strong now that everything around it is darker.
+    glare.inputs["Threshold"].default_value = 0.7
+    glare.inputs["Strength"].default_value = 0.40  # slightly stronger — fire pools should visibly bloom
     glare.inputs["Size"].default_value = 7.0
 
     ellipse = nt.nodes.get("mood_vignette_mask")
@@ -637,7 +683,15 @@ def _setup_compositor(scene, biome_style):
         desat = nt.nodes.new("CompositorNodeHueSat")
         desat.name = "mood_desaturate"
     try:
-        desat.inputs["Saturation"].default_value = 0.42
+        # v14: 0.42 -> 0.30 — village_poe_style/_synthesis.md is explicit
+        # ("practicamente TODO desaturado... salvo el fuego"); 0.42 still
+        # left grass/roofs/props reading as cheerfully saturated in the v13
+        # render. Fire/window emissives are unaffected by this global pull
+        # for the same reason the threshold change above still works: their
+        # SOURCE brightness is boosted well past 1.0 before this node, and
+        # Filmic's highlight rolloff reads a very bright warm pixel as a hot
+        # glow regardless of the saturation knob.
+        desat.inputs["Saturation"].default_value = 0.30
         desat.inputs["Hue"].default_value = 0.5  # 0.5 = no hue shift on this node's 0-1 wheel
         desat.inputs["Value"].default_value = 1.0
     except Exception as e:

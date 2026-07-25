@@ -343,7 +343,13 @@ STYLES = {
     "pradera": {  # bandit camp — Rivira x Axlin: uneven logs, high jitter, warm day
         "ground": (0.22, 0.31, 0.17), "ground_var": (0.31, 0.39, 0.23),
         "wood": (0.36, 0.26, 0.16), "wood_dark": (0.40, 0.29, 0.17),
-        "roof": (0.30, 0.22, 0.13), "accent": (0.55, 0.12, 0.10),  # tattered banner red
+        # v14 (2026-07-23): accent was (0.55,0.12,0.10) — a fully-saturated
+        # red that Filmic's highlight rolloff pushes toward candy PINK once
+        # lit (the exact "pink banner" violation flagged in _art_canon.md
+        # §17.2.5, saturation reserved for magic only). Desaturated ~35%
+        # toward its own luminance (still reads as a worn brick-red war
+        # banner, just muted instead of hot pink).
+        "roof": (0.30, 0.22, 0.13), "accent": (0.44, 0.16, 0.15),  # tattered banner, muted brick-red
         "stake_count": 44, "stake_r": 0.28, "stake_h": 3.2, "jitter": 1.0,
         "palisade_touching": True,
         "ring_coverage": 1.0, "roof_pitch": 0.8, "snow": False,
@@ -1096,8 +1102,16 @@ def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18):
     bm.to_mesh(me)
     bm.free()
     ob = bpy.data.objects.new(name, me)
-    tone = ROCK_TONES[rng.randrange(len(ROCK_TONES))]
-    ob.data.materials.append(mat("rock_%.2f_%.2f_%.2f" % tone, tone))
+    # v14 (2026-07-23, rocks/_synthesis.md "warm grey-tan base... with
+    # slight per-rock hue/value jitter"): picking one of 4 discrete
+    # ROCK_TONES entries already gave SOME variety, but two rocks landing
+    # on the same discrete pick were byte-identical in color — added a
+    # small continuous +/-6% jitter on top so literally no two rocks ever
+    # share an exact tone (same jitter_tone() pattern wood/thatch already
+    # use), approximating the reference's patchy-lichen read cheaply.
+    base_tone = ROCK_TONES[rng.randrange(len(ROCK_TONES))]
+    tone = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-0.06, 0.06)))) for c in base_tone)
+    ob.data.materials.append(mat("rock_%.3f_%.3f_%.3f" % tone, tone))
     link(ob)
     ob.location = loc
     ob.scale = (rng.uniform(0.75, 1.3), rng.uniform(0.75, 1.3),
@@ -1166,10 +1180,24 @@ def gable_roof(name, sx, sy, rise, loc, material, ridge_inset=0.0, ridge_y_frac=
 # (Second push: the first retune (0.55,0.42,0.20) was still visually identical
 # to the grey-straw under Filmic — per the contrast note above, the value must
 # overshoot the photo sample hard to read as STRAW at overview distance.)
-ROOF_THATCH = (0.66, 0.46, 0.12)
-ROOF_THATCH_DARK = (0.44, 0.29, 0.08)   # ridge-cap band, warmer to match
-ROOF_TILE = (0.58, 0.28, 0.16)
-ROOF_TILE_DARK = (0.42, 0.18, 0.09)     # coursing shadow band, same ref
+## v14 LOOK PASS (2026-07-23, Joan visual-bar review, _art_canon.md §17.2.5):
+## the v5/v6 "overshoot the photo sample hard" values above were tuned
+## against a since-superseded assumption (flat-color roofs need to fight
+## Filmic's desaturation to read as straw/tile at all). Two things changed
+## since: (a) roofs are now REAL PolyHaven photo textures (thatch_roof_
+## angled, see mat_textured() + mat()'s "roof_thatch*" routing) — the
+## texture itself carries the straw/tile STRUCTURE read, these constants
+## are now only a `tint` multiplied in at 0.45 factor, not the sole color
+## source; (b) canon now bans saturated non-magic surfaces outright
+## ("saturacion solo para lo mágico", §17.2.5) — the old golden-orange
+## thatch (0.66,0.46,0.12) and brick-red tile (0.58,0.28,0.16) were the
+## exact "salmon/pink roof" violation Joan flagged. Corrected values
+## sampled directly off real references in village_roofs/_synthesis.md:
+## thatch = warm grey-straw, tile = muted terracotta.
+ROOF_THATCH = (0.58, 0.52, 0.38)
+ROOF_THATCH_DARK = (0.42, 0.36, 0.24)   # ridge-cap band, darker same family
+ROOF_TILE = (0.68, 0.40, 0.27)
+ROOF_TILE_DARK = (0.48, 0.26, 0.16)     # coursing shadow band, same ref
 
 def mesh_obj_multi(name, verts, faces, face_mats, materials, loc=(0, 0, 0)):
     """Like mesh_obj() but supports a per-face material_index — used for
@@ -2877,8 +2905,14 @@ def build_garden(cx, cy, idx, rng):
     roots) so the plot doesn't read as a single repeated object."""
     z = terrain_h(cx, cy)
     soil = mat("soil", (0.24, 0.16, 0.10))
-    crop_tones = [(0.20, 0.42, 0.16), (0.55, 0.45, 0.10), (0.30, 0.44, 0.14),
-                  (0.62, 0.24, 0.16), (0.68, 0.58, 0.18)]
+    # v14 (2026-07-23): the old tones (bright candy green/yellow/red) were
+    # part of the "pastel mushroom" violation flagged in _art_canon.md
+    # §17.2.5 — a stalk+cap crop silhouette in a saturated tone literally
+    # reads as a pastel mushroom under flat light. Muted ~30% toward each
+    # tone's own luminance so the crop identity (green/mustard/root-red)
+    # still reads at a glance without competing with fire for saturation.
+    crop_tones = [(0.24, 0.36, 0.20), (0.47, 0.42, 0.22), (0.30, 0.39, 0.23),
+                  (0.51, 0.30, 0.23), (0.55, 0.49, 0.28)]
     rows, cols = 2, 3
     for r in range(rows):
         for c in range(cols):
@@ -3215,8 +3249,12 @@ def build_covered_plaza(cx, cy):
     for sx_, sy_ in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
         cylinder("plaza_post_%d_%d" % (sx_, sy_), 0.10, 2.8,
                   (cx + sx_ * span / 2, cy + sy_ * span / 2, z + 1.4), wood, verts_n=8)
+    # v14: was a stray literal (0.52,0.42,0.22) — the same saturated
+    # gold-thatch violation as the old ROOF_THATCH constant; unified to it
+    # so the covered plaza roof matches every other thatch roof's corrected
+    # warm grey-straw tone (village_roofs/_synthesis.md).
     gable_roof("plaza_roof", span * 1.08, span * 1.08, 1.2, (cx, cy, z + 2.85),
-               mat("roof_thatch", (0.52, 0.42, 0.22)))
+               mat("roof_thatch", ROOF_THATCH))
 
 # ── ERA/TECH COHERENCE RULE (PO live addendum, 2026-07-20 — general
 #    principle, applies now and to every future pass) ───────────────────────
@@ -3983,7 +4021,25 @@ def build_vegetation(cx, cy, ring_r, style, exclude=(), ring_radius_fn=None):
         z = terrain_h(x, y)
         if kind == "rocks":
             base_r = rng.uniform(0.5, 1.4)
-            make_rock("rock_%d" % i, base_r, (x, y, z + base_r * 0.25), rng)
+            # v14 (2026-07-23, rocks/_synthesis.md): the old call always used
+            # make_rock()'s default flatten=0.65/disp=0.18 for EVERY scattered
+            # boulder — one repeated silhouette family read as "clone stamp"
+            # icospheres (confirmed by render: smooth pale blobs dotting the
+            # wall line). Real boulder fields mix silhouette FAMILIES (angular
+            # fractured block / flat stacked slab / tall rounded egg — the 3
+            # reference photos never share a shape) — rolled here per rock.
+            # Also sunk deeper into the terrain (0.25 -> 0.14x radius above
+            # ground) so more of each boulder embeds instead of resting on
+            # top.
+            family = rng.choice(("block", "slab", "egg"))
+            if family == "slab":
+                flatten, disp = rng.uniform(0.28, 0.42), rng.uniform(0.14, 0.20)
+            elif family == "egg":
+                flatten, disp = rng.uniform(0.95, 1.25), rng.uniform(0.10, 0.16)
+            else:  # block — angular fractured, harder facets
+                flatten, disp = rng.uniform(0.60, 0.85), rng.uniform(0.22, 0.30)
+            make_rock("rock_%d" % i, base_r, (x, y, z + base_r * 0.14), rng,
+                      flatten=flatten, disp=disp)
         else:
             trunk_h = rng.uniform(1.2, 2.2)
             cylinder("trunk_%d" % i, 0.14, trunk_h, (x, y, z + trunk_h / 2),
