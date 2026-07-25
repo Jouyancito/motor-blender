@@ -186,18 +186,87 @@ def _tune_lights(scene, biome_style, rng):
     # "brightest thing in frame".
     world = scene.world
     if world is not None and world.use_nodes:
-        bg = world.node_tree.nodes.get("Background")
+        nt = world.node_tree
+        bg = nt.nodes.get("Background")
         if bg is not None:
             try:
                 cur_col = tuple(bg.inputs[0].default_value)[:3]
-                dusk_target = (0.045, 0.065, 0.13)
+                # v15 (2026-07-25, poe_visual_bar re-review — Joan's own
+                # verdict on the v14 render: "el cielo se ve como un eclipse,
+                # muy claro contra el suelo oscuro"). The v14 pass above
+                # already pushed the flat Background color toward a dark
+                # dusk tone, but it was still ONE UNIFORM COLOR across the
+                # whole dome — a perfectly flat sky reads artificial/eclipse-
+                # like no matter how dark, because real dusk always has a
+                # ZENITH/HORIZON gradient (darker cool-indigo overhead,
+                # slightly warmer/dimmer near the horizon). Replaces the
+                # flat Color input with a small gradient chain: World
+                # Texture Coordinate's "Generated" output IS the ray
+                # direction on the sky dome for a node tree with no real
+                # geometry (the standard sky-gradient technique) -> Separate
+                # XYZ -> Z (elevation, -1 down / +1 up) -> Map Range to 0-1
+                # -> Color Ramp blending horizon_col (low) to zenith_col
+                # (high) -> Background Color. Idempotent (node names
+                # looked up by `.get()`, re-running rewires the same chain).
+                zenith_target = (0.035, 0.045, 0.09)
+                horizon_target = (0.15, 0.11, 0.10)
                 dusk_amt = rng.uniform(0.55, 0.70)
-                dusk_col = tuple(
-                    cur_col[i] * (1.0 - dusk_amt) + dusk_target[i] * dusk_amt for i in range(3)
+                zenith_col = tuple(
+                    cur_col[i] * (1.0 - dusk_amt) + zenith_target[i] * dusk_amt for i in range(3)
                 )
-                bg.inputs[0].default_value = (*dusk_col, 1.0)
+                horizon_col = tuple(
+                    cur_col[i] * (1.0 - dusk_amt * 0.65) + horizon_target[i] * dusk_amt * 0.65
+                    for i in range(3)
+                )
+
+                tex_coord = nt.nodes.get("mood_sky_texcoord")
+                if tex_coord is None:
+                    tex_coord = nt.nodes.new("ShaderNodeTexCoord")
+                    tex_coord.name = "mood_sky_texcoord"
+                sep_xyz = nt.nodes.get("mood_sky_sepxyz")
+                if sep_xyz is None:
+                    sep_xyz = nt.nodes.new("ShaderNodeSeparateXYZ")
+                    sep_xyz.name = "mood_sky_sepxyz"
+                sky_maprange = nt.nodes.get("mood_sky_maprange")
+                if sky_maprange is None:
+                    sky_maprange = nt.nodes.new("ShaderNodeMapRange")
+                    sky_maprange.name = "mood_sky_maprange"
+                sky_maprange.inputs["From Min"].default_value = -0.15
+                sky_maprange.inputs["From Max"].default_value = 1.0
+                sky_maprange.inputs["To Min"].default_value = 0.0
+                sky_maprange.inputs["To Max"].default_value = 1.0
+                sky_maprange.clamp = True
+                sky_ramp = nt.nodes.get("mood_sky_ramp")
+                if sky_ramp is None:
+                    sky_ramp = nt.nodes.new("ShaderNodeValToRGB")
+                    sky_ramp.name = "mood_sky_ramp"
+                els = sky_ramp.color_ramp.elements
+                while len(els) > 2:
+                    els.remove(els[-1])
+                if len(els) < 2:
+                    els.new(1.0)
+                els[0].position = 0.0
+                els[0].color = (*horizon_col, 1.0)
+                els[1].position = 0.70
+                els[1].color = (*zenith_col, 1.0)
+
+                nt.links.new(tex_coord.outputs["Generated"], sep_xyz.inputs["Vector"])
+                nt.links.new(sep_xyz.outputs["Z"], sky_maprange.inputs["Value"])
+                nt.links.new(sky_maprange.outputs["Result"], sky_ramp.inputs["Fac"])
+                nt.links.new(sky_ramp.outputs["Color"], bg.inputs["Color"])
             except Exception as e:
-                print("[mood_valheim] skipped world background dusk-tint (%s)" % e)
+                print("[mood_valheim] skipped world background dusk-gradient (%s)" % e)
+                # Fallback: at least apply a flat dark tint so a node-graph
+                # failure on some other Blender build doesn't leave the
+                # bright daytime flat color in place.
+                try:
+                    dusk_target = (0.06, 0.07, 0.12)
+                    dusk_amt = 0.6
+                    dusk_col = tuple(cur_col[i] * (1 - dusk_amt) + dusk_target[i] * dusk_amt
+                                      for i in range(3))
+                    bg.inputs[0].default_value = (*dusk_col, 1.0)
+                except Exception:
+                    pass
             try:
                 cur = bg.inputs[1].default_value
                 bg.inputs[1].default_value = cur * rng.uniform(0.14, 0.22)

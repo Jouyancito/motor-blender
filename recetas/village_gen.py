@@ -324,7 +324,18 @@ from mathutils import Vector, noise
 
 args = sys.argv[sys.argv.index("--") + 1:]
 BIOME = args[0]
-OUT_DIR = args[1]
+# v15 fix (2026-07-25): a RELATIVE out_dir arg used to be passed straight to
+# os.makedirs()/render.filepath/save_as_mainfile below — bpy resolves a
+# relative path against Blender's CURRENT working directory at the moment of
+# the FIRST file-write operation, which for a background render invoked
+# without an explicit --python-expr cwd is NOT this script's own directory
+# (confirmed: v14's renders landed at C:\_out\village_v14_look\ instead of
+# motor-blender\_out\village_v14_look\ from a relative "_out/..." arg).
+# os.path.abspath() resolves against Python's os.getcwd() at ARGUMENT-PARSE
+# time (right now, before any bpy write call), which is deterministic and
+# matches the caller's actual shell cwd — pin it here, before anything below
+# ever touches OUT_DIR.
+OUT_DIR = os.path.abspath(args[1])
 SEED = int(args[2]) if len(args) > 2 else 7
 os.makedirs(OUT_DIR, exist_ok=True)
 rng = random.Random(SEED)
@@ -406,7 +417,14 @@ STYLES = {
     },
 }
 S = STYLES[BIOME]
-ROCK_TONES = [(0.52, 0.51, 0.46), (0.47, 0.47, 0.42), (0.58, 0.57, 0.50), (0.50, 0.53, 0.47)]
+# v15 (2026-07-25, poe_visual_bar round 2 — Joan: the cliff boulder line and
+# campfire ring rocks still read "pale/white-ish" against the dusk mood).
+# The old lightest entry (0.58,0.57,0.50) + up to +6% jitter could reach
+# ~0.62 — not literally white, but light enough to stand out starkly once
+# the ground got much darker in v14's mood pass. Darkened the whole set
+# ~15-18% (kept the same warm grey-tan HUE relationship, R>=G>B) toward the
+# canon (0.52,0.51,0.46) neighborhood so no tone in the set reads pale.
+ROCK_TONES = [(0.43, 0.42, 0.38), (0.39, 0.39, 0.35), (0.47, 0.46, 0.41), (0.41, 0.44, 0.39)]
 
 # ── THREAT axis (Axlin principle) — schema for future profiles ─────────────
 # Each profile: wall_h_mult (defense height response), gate_reinforced (extra
@@ -1110,7 +1128,12 @@ def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18):
     # share an exact tone (same jitter_tone() pattern wood/thatch already
     # use), approximating the reference's patchy-lichen read cheaply.
     base_tone = ROCK_TONES[rng.randrange(len(ROCK_TONES))]
-    tone = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-0.06, 0.06)))) for c in base_tone)
+    # v15 (2026-07-25): widened +/-6% -> +/-10% — the old jitter was
+    # verified too subtle to actually READ at overview distance (Joan's
+    # "verify per-rock jitter is actually visible" ask); still bounded well
+    # clear of white/black clipping (max ~0.52 on the lightest v15
+    # ROCK_TONES entry * 1.10).
+    tone = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-0.10, 0.10)))) for c in base_tone)
     ob.data.materials.append(mat("rock_%.3f_%.3f_%.3f" % tone, tone))
     link(ob)
     ob.location = loc
@@ -1144,6 +1167,101 @@ def add_moss_patch(name, pos, rng, r=0.09):
     m = ellipsoid(name, r * rng.uniform(0.8, 1.3), r * rng.uniform(0.8, 1.3), r * 0.28, pos, moss_mat)
     m.rotation_euler = (0, 0, rng.uniform(0, math.tau))
     return m
+
+# ── VEGETATION RECLAIM (v15, 2026-07-25) ────────────────────────────────────
+# poe_visual_bar/_synthesis.md "Construction coherence + vegetation reclaim"
+# (Joan's own critique of v14: "no change of grass at all"): PoE grows grass
+# tufts IN pavement joints, moss on stone edges, small flowers at path
+# margins — vegetation colonizes exactly where feet DON'T wear it away.
+# game/tools/blender/{grass,rock,flower}_pack/ already exist as importable
+# GLBs but wiring a cross-repo bpy import into every placement here is a
+# bigger integration than this pass's budget — this generates cheap
+# painterly tuft geometry INLINE instead (explicitly sanctioned fallback
+# per the reference doc's own "Qué capturar" #9 + blender-asset-smith's
+# flower_pack lesson that a few crossed alpha-less blades read fine at
+# village-overview distance). Placement bias is the CALLER's job — see
+# build_vegetation_reclaim() below.
+def add_grass_tuft(name, pos, rng, scale=1.0):
+    """3-5 thin crossed blade triangles (no alpha/UV needed — flat-shaded,
+    matches the family's low-poly silhouette-first language) radiating from
+    one ground point. Muted green, §17 canon palette range (same tone
+    range as add_moss_patch's own moss green, slightly brighter/more
+    saturated so tufts read as LIVING grass against mossy stone)."""
+    tone = (rng.uniform(0.14, 0.22), rng.uniform(0.27, 0.38), rng.uniform(0.11, 0.18))
+    grass_mat = mat("grass_tuft_%.2f_%.2f_%.2f" % tone, tone, rough=0.9)
+    n = rng.randint(3, 5)
+    px, py, pz = pos
+    for i in range(n):
+        a = rng.uniform(0, math.tau)
+        lean = rng.uniform(0.25, 0.55)
+        h = rng.uniform(0.09, 0.20) * scale
+        bw = 0.028 * scale
+        nx, ny = -math.sin(a), math.cos(a)
+        v0 = (px + nx * bw, py + ny * bw, pz)
+        v1 = (px - nx * bw, py - ny * bw, pz)
+        v2 = (px + math.cos(a) * h * lean, py + math.sin(a) * h * lean, pz + h)
+        mesh_obj("%s_blade_%d" % (name, i), [v0, v1, v2], [(0, 1, 2)], grass_mat)
+
+
+def add_flower_speck(name, pos, rng):
+    """Tiny ground-level color accent — sparser than tufts, per the PoE
+    reference's 'small flowers at path margins' (never one per tuft)."""
+    tone = rng.choice(((0.52, 0.47, 0.14), (0.68, 0.66, 0.62), (0.48, 0.18, 0.20)))
+    flower_mat = mat("flower_speck_%.2f_%.2f_%.2f" % tone, tone, rough=0.6)
+    m = ellipsoid(name, 0.028, 0.028, 0.022, (pos[0], pos[1], pos[2] + 0.025), flower_mat)
+    m.rotation_euler = (0, 0, rng.uniform(0, math.tau))
+    return m
+
+
+def build_vegetation_reclaim(plaza_x, plaza_y, plaza_r, path_polylines, rng):
+    """Ground-contact-biased dressing: (1) a sparse ring just OUTSIDE every
+    registered structure footprint (PLACED_FOOTPRINTS — building bases,
+    where feet gather AT the door but not against the wall itself), (2)
+    tufts/flowers biased toward the plaza cobble's OUTER margin (away from
+    the fire/center where the whole village actually stands), (3) a couple
+    of tufts just off each path's shoulder (never ON the trampled
+    centerline itself — that's the one place feet DO wear it away).
+    Called once, near the end of build_interior, after PLACED_FOOTPRINTS
+    and path_polylines both exist."""
+    for fi, (fx, fy, fr) in enumerate(PLACED_FOOTPRINTS):
+        n = rng.randint(3, 6)
+        for i in range(n):
+            a = rng.uniform(0, math.tau)
+            d = fr + rng.uniform(0.15, 0.55)
+            x, y = fx + math.cos(a) * d, fy + math.sin(a) * d
+            z = terrain_h(x, y)
+            if rng.random() < 0.82:
+                add_grass_tuft("reclaim_base_%d_%d" % (fi, i), (x, y, z), rng, scale=0.85)
+            else:
+                add_flower_speck("reclaim_base_flower_%d_%d" % (fi, i), (x, y, z), rng)
+
+    for i in range(14):
+        a = rng.uniform(0, math.tau)
+        d = plaza_r * rng.uniform(0.62, 0.95)  # outer margin, clear of the fire/center
+        x, y = plaza_x + math.cos(a) * d, plaza_y + math.sin(a) * d
+        z = terrain_h(x, y) + 0.015
+        if rng.random() < 0.72:
+            add_grass_tuft("reclaim_plaza_%d" % i, (x, y, z), rng, scale=0.75)
+        else:
+            add_flower_speck("reclaim_plaza_flower_%d" % i, (x, y, z), rng)
+
+    for pi, poly in enumerate(path_polylines):
+        if len(poly) < 4:
+            continue
+        for _t in range(2):
+            idx = rng.randrange(1, len(poly) - 1)
+            x0, y0 = poly[idx]
+            x1, y1 = poly[idx + 1]
+            dx, dy = x1 - x0, y1 - y0
+            dlen = math.hypot(dx, dy) or 1.0
+            perp_x, perp_y = -dy / dlen, dx / dlen
+            side = rng.choice((-1, 1))
+            off = rng.uniform(0.7, 1.15)  # off the trampled path width, at its shoulder
+            x = x0 + perp_x * off * side
+            y = y0 + perp_y * off * side
+            z = terrain_h(x, y)
+            add_grass_tuft("reclaim_path_%d_%d" % (pi, _t), (x, y, z), rng, scale=0.7)
+
 
 def gable_roof(name, sx, sy, rise, loc, material, ridge_inset=0.0, ridge_y_frac=0.0):
     """`ridge_inset` (PO v8 item 4, ROOF SILHOUETTE): >0 shortens the ridge
@@ -1790,6 +1908,12 @@ def build_poor_footing(name, sx, sy, x, y, z, rng):
         r = rng.uniform(0.13, 0.20)
         make_rock("%s_footing_%d" % (name, i), r, (x + px, y + py, z + r * 0.5), rng,
                   flatten=rng.uniform(0.55, 0.75), disp=0.16)
+        # v15 (poe_cobble_grass_joints_moss.png "moss on stone lower edges")
+        # — a fraction of footing stones get a small moss patch, same trick
+        # already used on palisade stakes/casona posts.
+        if rng.random() < 0.30:
+            add_moss_patch("%s_footing_moss_%d" % (name, i), (x + px, y + py, z + r * 0.85),
+                            rng, r=r * 0.9)
     return z + footing_h
 
 
@@ -2008,12 +2132,34 @@ def build_casona(name, loc_xy, style, rng):
     # Round-2 tune (self-eyeball): (0.50,0.49,0.46) at 0.55m read as a thin
     # pale smudge, not "stone" — lightened + a taller course makes the
     # plinth unmistakably a DIFFERENT material the casona sits ON.
-    stone = mat("stone_casona", (0.58, 0.57, 0.53), rough=0.7)
+    # v15 (2026-07-25, poe_visual_bar — Joan: the plinth's flat pale color
+    # reads as unfinished PLASTER, not cut stone). Routes through the same
+    # cobblestone photo texture the plaza already uses (mat_textured's
+    # PLAZA_TEX_SLUG — real jointed-stone structure, not a flat color) with a
+    # darker/muter tint than the old flat (0.58,0.57,0.53) so it no longer
+    # reads as a bright clean band against the now-darker dusk mood.
+    # `box()` scales via object.scale, so 'side' (world-space Position) is
+    # the correct projection per mat_textured's own docstring — 'side_local'
+    # is reserved for unscaled cylinder()/strut() primitives only.
+    stone_tint = (0.44, 0.43, 0.39)
+    if USE_REAL_TEXTURES:
+        stone = mat_textured("stone_casona_" + BIOME, PLAZA_TEX_SLUG[BIOME], scale=1.8,
+                              projection='side', tint=stone_tint)
+    else:
+        stone = mat("stone_casona", stone_tint, rough=0.7)
 
     # FOUNDATION — taller + more "cut stone" than a hut's thin stone_base
     # slab: the casona visibly SITS ON something (PO principle 1).
     plinth_h = 0.75
     box(name + "_plinth", sx * 1.14, sy * 1.14, plinth_h, (x, y, z + plinth_h / 2), stone)
+    # MOSS LOWER BAND (v15, poe_cobble_grass_joints_moss.png — "moss on
+    # stone lower edges"): a thin darker-green strip wrapping the plinth's
+    # bottom course, slightly proud of the stone so it reads as a distinct
+    # material band without needing a per-vertex color gradient shader.
+    moss_band_h = plinth_h * 0.24
+    moss_band_mat = mat("stone_moss_band", (0.15, 0.20, 0.13), rough=1.0)
+    box(name + "_plinth_mossband", sx * 1.17, sy * 1.17, moss_band_h,
+        (x, y, z + moss_band_h / 2), moss_band_mat)
     base_z = z + plinth_h
 
     # DOOR — computed BEFORE the wall shell so it knows the gap size.
@@ -2176,7 +2322,22 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
     touching = style.get("palisade_touching", False)
     cov = style["ring_coverage"]
     gate_half = 0.10
-    wood = mat("wood_dark", style["wood_dark"])
+    # v15 (2026-07-25, poe_visual_bar "construction coherence" — Joan's own
+    # clone-stamp critique of v14: "son palos identicos... misma textura,
+    # mismo orden"): the wood_dark material uses `side_local` projection
+    # (TexCoord.Object — see mat_textured()'s docstring), which samples in
+    # the STAKE'S OWN local mesh space. Every stake used to keep
+    # rotation_euler.z == 0 (only x/y lean was randomized), so every stake
+    # presented the exact same local-space slice of the bark texture toward
+    # camera — identical grain phase on every log. Fixed below by giving
+    # each stake its own random Z spin (see `lean` a few lines down). ALSO
+    # gives every stake ONE OF 3 weathered wood-tint variants instead of one
+    # shared material for the whole ring (2-3 tint variants per Joan's ask).
+    wood_base = mat("wood_dark", style["wood_dark"])
+    stake_wood_mats = [mat("wood_dark", jitter_tone(rng, style["wood_dark"], pct=0.13))
+                        for _ in range(3)]
+    rope_mat = mat("rope_lashing", (0.40, 0.31, 0.17), rough=0.95)
+    wood = wood_base
     if touching:
         nominal_spacing = style["stake_r"] * 2 * 0.92
         n = max(style["stake_count"], math.ceil(math.tau * ring_r / nominal_spacing))
@@ -2205,16 +2366,22 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
         # (hielo), so its stakes were perfectly uniform. Every stake now
         # varies +/-, touching or not.
         r = style["stake_r"] * (1.0 + rng.uniform(-0.15, 0.35))
-        st = cylinder("stake_%d" % i, r, h, (x, y, z + h / 2), wood)
+        stake_wood = stake_wood_mats[rng.randrange(len(stake_wood_mats))]
+        st = cylinder("stake_%d" % i, r, h, (x, y, z + h / 2), stake_wood)
         tip_h = r * 1.8
         bpy.ops.mesh.primitive_cone_add(vertices=10, radius1=r, depth=tip_h,
             location=(x, y, z + h / 2 + tip_h / 2))
         cone = bpy.context.object
         cone.name = "stake_%d_tip" % i
-        cone.data.materials.append(wood)
+        cone.data.materials.append(stake_wood)
         cone.parent = st
         cone.matrix_parent_inverse = st.matrix_world.inverted()
-        lean = (rng.uniform(-0.06, 0.06) * j, rng.uniform(-0.06, 0.06) * j, 0)
+        # v15: random Z spin (see the block comment above `wood_base`) —
+        # this is what actually varies the visible wood-grain PHASE per
+        # log; x/y lean alone left every stake showing the same local-space
+        # texture slice toward camera.
+        lean = (rng.uniform(-0.06, 0.06) * j, rng.uniform(-0.06, 0.06) * j,
+                rng.uniform(0.0, math.tau))
         st.rotation_euler = lean
         # KNOTS + MOSS (v11 item 14) — sparse per-stake decals so the wall
         # doesn't read as one repeated clean cylinder.
@@ -2223,6 +2390,35 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
                           rng, r=r * 1.1)
         if rng.random() < 0.18:
             add_moss_patch("stake_%d_moss" % i, (x, y, z + 0.06), rng, r=r * 1.6)
+        # FIELDSTONE FOOTING (v15, poe_visual_bar "weight sits on strength" —
+        # poe_wall_stone_base_wood_spikes_lashing.png: boulders form the
+        # footing where wood meets ground). Reuses make_rock()'s per-rock
+        # bmesh/noise variation (same trick build_poor_footing already uses
+        # for hut walls) — small, half-buried, only at a fraction of stakes
+        # so it reads as an irregular course, not a repeated ring.
+        if rng.random() < 0.55:
+            for _fi in range(rng.randint(1, 2)):
+                fr = rng.uniform(0.09, 0.16)
+                fx = x + rng.uniform(-r * 1.6, r * 1.6)
+                fy = y + rng.uniform(-r * 1.6, r * 1.6)
+                fz = terrain_h(fx, fy)
+                foot = make_rock("stake_%d_footing_%d" % (i, _fi), fr, (fx, fy, fz + fr * 0.42), rng,
+                                  flatten=rng.uniform(0.55, 0.75), disp=0.16)
+                if rng.random() < 0.30:
+                    add_moss_patch("stake_%d_footing_moss_%d" % (i, _fi),
+                                    (fx, fy, fz + fr * 0.7), rng, r=fr * 0.9)
+        # BROKEN DEBRIS AT THE BASE (v15, same reference — "broken planks/
+        # debris accumulate at the base") — occasional short plank lying
+        # flat/tilted near a stake, distinct from the leaning repair
+        # `patch_%d` pieces below (those are upright, this is ground litter).
+        if rng.random() < 0.10:
+            dbg_len = rng.uniform(0.45, 0.95)
+            dbg_a = rng.uniform(0, math.tau)
+            ddx, ddy = x + math.cos(dbg_a) * r * 1.8, y + math.sin(dbg_a) * r * 1.8
+            debris = box("stake_%d_debris" % i, dbg_len, 0.09, 0.05,
+                         (ddx, ddy, terrain_h(ddx, ddy) + 0.03), wood_base)
+            debris.rotation_euler = (rng.uniform(-0.15, 0.15), rng.uniform(-0.15, 0.15),
+                                     rng.uniform(0, math.tau))
         ring_heights.append((z, x, y))
         placed.append((a, x, y, z, h))
     if placed:
@@ -2246,6 +2442,21 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
                 zr = (z1 + z2) / 2 + frac * nominal_h
                 rail = box("rail_%d_%d" % (k, idx), length, 0.07, 0.09, (mx, my, zr), wood)
                 rail.rotation_euler = (0, 0, ang)
+            # ROPE LASHING (v15, poe_wall_stone_base_wood_spikes_lashing.png
+            # — "rope lashing at every joint"): a torus wrapped around the
+            # stake at each rail height, every 3rd junction (own docstring:
+            # "every 3-4 stakes is enough" — a coil per stake would be
+            # excessive clutter at 500+ stakes on a touching-log ring).
+            if k % 3 == 0:
+                lash_r = max(0.03, style["stake_r"] * 1.20)
+                for idx, frac in enumerate((0.62, 0.30)):
+                    lz = z1 + frac * nominal_h
+                    bpy.ops.mesh.primitive_torus_add(
+                        major_radius=lash_r, minor_radius=max(0.012, lash_r * 0.24),
+                        major_segments=8, minor_segments=6, location=(x1, y1, lz))
+                    coil = bpy.context.object
+                    coil.name = "lash_%d_%d" % (k, idx)
+                    coil.data.materials.append(rope_mat)
     placed_patches = 0
     patch_tries = 0
     while placed_patches < 2 and patch_tries < 40:
@@ -2911,8 +3122,14 @@ def build_garden(cx, cy, idx, rng):
     # reads as a pastel mushroom under flat light. Muted ~30% toward each
     # tone's own luminance so the crop identity (green/mustard/root-red)
     # still reads at a glance without competing with fire for saturation.
-    crop_tones = [(0.24, 0.36, 0.20), (0.47, 0.42, 0.22), (0.30, 0.39, 0.23),
-                  (0.51, 0.30, 0.23), (0.55, 0.49, 0.28)]
+    # v15 (2026-07-25, poe_visual_bar — Joan: crop spheres still read as
+    # "pastel Easter eggs" at v14). Cut down to 4 clearly EARTH-toned
+    # entries (two muted greens, one mustard-brown, ONE dull reddish-brown
+    # accent — the old 5th tan (0.55,0.49,0.28) was the closest to the
+    # candy-pastel violation, dropped) and pulled every value further
+    # toward its own dark/desaturated end.
+    crop_tones = [(0.19, 0.28, 0.17), (0.26, 0.34, 0.19), (0.37, 0.32, 0.18),
+                  (0.40, 0.23, 0.18)]
     rows, cols = 2, 3
     for r in range(rows):
         for c in range(cols):
@@ -3662,17 +3879,24 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     plaza_x, plaza_y = cx, cy - commons_r * 0.45
     landmarks["plaza"] = (plaza_x, plaza_y)
     fz = terrain_h(plaza_x, plaza_y)
+    # v15 (2026-07-25): ring radius 0.8 -> 1.05 — the stones sat close
+    # enough to the point light below that mood_valheim's light-pool boost
+    # (1.7-2.1x) blew their diffuse response to near-white regardless of
+    # ROCK_TONES' own (already-darkened) color. Moving them out a bit +
+    # trimming the light's own base energy (see `fl.energy` below) keeps
+    # the pool bright at range without flashing out geometry sitting right
+    # under it.
     for i in range(5):
         a = i / 5 * math.tau
         make_rock("fire_stone_%d" % i, rng.uniform(0.20, 0.28),
-                   (plaza_x + math.cos(a) * 0.8, plaza_y + math.sin(a) * 0.8,
+                   (plaza_x + math.cos(a) * 1.05, plaza_y + math.sin(a) * 1.05,
                     fz + 0.15), rng, flatten=0.7)
     # Real flame wedges + crossed logs (PO v8.1 item 3) — was a single white
     # placeholder cone.
     build_campfire_logs("plaza_fire", plaza_x, plaza_y, fz + 0.15, rng, scale=1.3)
     build_campfire_flames("plaza_fire", plaza_x, plaza_y, fz + 0.15, rng, scale=1.3)
     fl = bpy.data.lights.new("firelight", 'POINT')
-    fl.energy = 300.0
+    fl.energy = 190.0  # v15: was 300 — see ring-radius comment above
     fl.color = (1.0, 0.55, 0.2)
     flo = bpy.data.objects.new("firelight", fl)
     flo.location = (plaza_x, plaza_y, fz + 1.2)
@@ -3942,6 +4166,12 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     # Trampled dirt plaza around the hearth.
     build_ground_patch(plaza_x, plaza_y, 2.4, rng, tone=DIRT_PATH_WORN, surface="cobblestone")
 
+    # VEGETATION RECLAIM (v15, poe_visual_bar) — grass/flowers at building
+    # bases, plaza margins, path shoulders. MUST run after PLACED_FOOTPRINTS
+    # (every house/casona/module placed above already registers into it)
+    # and path_polylines (built just above) both exist.
+    build_vegetation_reclaim(plaza_x, plaza_y, 2.4, path_polylines, rng)
+
     # HANGING DECORATIONS (PO v8 item 3, retuned PO v8.1 item 2, PO v9 item 4
     # 2026-07-19) — strung between NEAREST-NEIGHBOR building pairs instead
     # of a FIXED named-pair list. The original fixed list (hut_kitchen<->
@@ -4145,11 +4375,13 @@ def build_destacamento(cx, cy, ring_r, style, threat):
     fz = terrain_h(fx, fy)
     for i in range(4):
         a = i / 4 * math.tau
+        # v15: ring radius 0.6 -> 0.80 — same overexposure fix as the plaza
+        # fire (see its own comment above).
         make_rock("dest_fire_stone_%d" % i, rng.uniform(0.16, 0.22),
-                   (fx + math.cos(a) * 0.6, fy + math.sin(a) * 0.6, fz + 0.12), rng, flatten=0.7)
+                   (fx + math.cos(a) * 0.80, fy + math.sin(a) * 0.80, fz + 0.12), rng, flatten=0.7)
     build_campfire_logs("dest_fire", fx, fy, fz + 0.12, rng, scale=1.0)
     build_campfire_flames("dest_fire", fx, fy, fz + 0.12, rng, scale=1.0)
-    build_ember_light("dest_fire", fx, fy, fz + 0.12, energy=180.0)
+    build_ember_light("dest_fire", fx, fy, fz + 0.12, energy=140.0)
 
     build_scale_ref(cx, cy, ring_r, gate_ang)
     return ring_heights
