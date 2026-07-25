@@ -417,14 +417,30 @@ STYLES = {
     },
 }
 S = STYLES[BIOME]
-# v15 (2026-07-25, poe_visual_bar round 2 — Joan: the cliff boulder line and
-# campfire ring rocks still read "pale/white-ish" against the dusk mood).
-# The old lightest entry (0.58,0.57,0.50) + up to +6% jitter could reach
-# ~0.62 — not literally white, but light enough to stand out starkly once
-# the ground got much darker in v14's mood pass. Darkened the whole set
-# ~15-18% (kept the same warm grey-tan HUE relationship, R>=G>B) toward the
-# canon (0.52,0.51,0.46) neighborhood so no tone in the set reads pale.
-ROCK_TONES = [(0.43, 0.42, 0.38), (0.39, 0.39, 0.35), (0.47, 0.46, 0.41), (0.41, 0.44, 0.39)]
+# v16 fix (2026-07-25, poe_visual_bar round 2 — Joan: the cliff boulder line
+# and campfire ring rocks STILL read "pale/white-ish" even after v15's
+# ~15-18% darkening pass here). Root cause was NOT the material tone — it
+# was EXPOSURE, on two different mechanisms per rock group (see mem_save/
+# report for the full A/B evidence):
+#   - Campfire/footing rocks sit centimeters from the plaza "firelight" /
+#     *_emberlight point lights, which mood_valheim.py's _tighten_light_pools
+#     re-boosts 1.7-2.1x AFTER village_gen.py's own per-scene energy tuning —
+#     confirmed with v14's OLDER, even-lighter rock tones showing the exact
+#     same white-out, so darkening the tone here was never going to fix a
+#     clipping problem. Fixed at the source: those two lights are now
+#     exempted from the blanket boost (mood_valheim.py v16).
+#   - The cliff boulder line (far from any point light) reads pale because
+#     it's a large convex sky-facing shape catching residual bright ambient
+#     from the world background — fixed upstream by the sky darkening fix
+#     (mood_valheim.py v16, see _setup_compositor's mist-tint root cause).
+# With the actual exposure bugs fixed, RESTORE the tone toward the original
+# canon (0.52,0.51,0.46) — v15's extra darkening is no longer needed and
+# only made unlit/torch-lit rocks elsewhere (courtyard scatter, garden
+# edging) read slightly muddy. Keep the SINGLE outlier v15 correctly
+# flagged (old lightest entry (0.58,0.57,0.50), which could reach ~0.62
+# with jitter) trimmed down, and tighten jitter from +/-10% to +/-8% so nothing
+# in the set can drift back into that flagged pale range.
+ROCK_TONES = [(0.50, 0.49, 0.44), (0.45, 0.45, 0.40), (0.53, 0.52, 0.46), (0.48, 0.51, 0.45)]
 
 # ── THREAT axis (Axlin principle) — schema for future profiles ─────────────
 # Each profile: wall_h_mult (defense height response), gate_reinforced (extra
@@ -1128,12 +1144,15 @@ def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18):
     # share an exact tone (same jitter_tone() pattern wood/thatch already
     # use), approximating the reference's patchy-lichen read cheaply.
     base_tone = ROCK_TONES[rng.randrange(len(ROCK_TONES))]
-    # v15 (2026-07-25): widened +/-6% -> +/-10% — the old jitter was
-    # verified too subtle to actually READ at overview distance (Joan's
-    # "verify per-rock jitter is actually visible" ask); still bounded well
-    # clear of white/black clipping (max ~0.52 on the lightest v15
-    # ROCK_TONES entry * 1.10).
-    tone = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-0.10, 0.10)))) for c in base_tone)
+    # v15: widened +/-6% -> +/-10% — the old jitter was verified too subtle
+    # to actually READ at overview distance (Joan's "verify per-rock jitter
+    # is actually visible" ask).
+    # v16 (2026-07-25): pulled back to +/-8% — the real "pale rocks" bug was
+    # exposure (see ROCK_TONES' own comment above), not jitter ceiling, but
+    # +/-10% on the new, slightly-lighter-than-v15 ROCK_TONES set could still
+    # reach ~0.58 on its lightest entry, the exact value Joan flagged as pale
+    # before. +/-8% keeps jitter clearly visible while staying under that.
+    tone = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-0.08, 0.08)))) for c in base_tone)
     ob.data.materials.append(mat("rock_%.3f_%.3f_%.3f" % tone, tone))
     link(ob)
     ob.location = loc
@@ -1161,8 +1180,21 @@ def add_wood_knot(name, pos, rng, r=0.05):
 
 def add_moss_patch(name, pos, rng, r=0.09):
     """Small green/brown moss blob at a log base or shaded face (v11 item
-    14, HANDMADE-IMPERFECTION principle)."""
-    tone = (rng.uniform(0.16, 0.26), rng.uniform(0.28, 0.40), rng.uniform(0.13, 0.20))
+    14, HANDMADE-IMPERFECTION principle).
+
+    v16 fix (2026-07-25, poe_visual_bar round 2 — Joan: "mint-green moss
+    discs... reads as toy pancakes", violates §17.2.5 saturation-only-for-
+    magic). This function predates v15 (v11) and v15 never touched it — the
+    stake-base "MINT-GREEN MOSS DISCS" Joan flagged were this original
+    tone, never darkened by any prior pass. Old range (R 0.16-0.26 / G
+    0.28-0.40 / B 0.13-0.20) has G up to ~2x R and B, real chroma — under a
+    nearby boosted torch/point light (mood_valheim's _tighten_light_pools)
+    that reads as saturated kelly-green, not moss. Retuned to the SAME dark
+    desaturated grey-green family as the casona's already-Joan-approved
+    stone_moss_band tint ((0.15,0.20,0.13), see build_casona) — narrower
+    R/G/B spread (less chroma) and a lower ceiling, so it reads as a dark
+    stain on stone/wood rather than a bright disc, at every light level."""
+    tone = (rng.uniform(0.09, 0.14), rng.uniform(0.13, 0.19), rng.uniform(0.07, 0.11))
     moss_mat = mat("moss_patch_%.2f_%.2f_%.2f" % tone, tone, rough=1.0)
     m = ellipsoid(name, r * rng.uniform(0.8, 1.3), r * rng.uniform(0.8, 1.3), r * 0.28, pos, moss_mat)
     m.rotation_euler = (0, 0, rng.uniform(0, math.tau))
@@ -1184,10 +1216,26 @@ def add_moss_patch(name, pos, rng, r=0.09):
 def add_grass_tuft(name, pos, rng, scale=1.0):
     """3-5 thin crossed blade triangles (no alpha/UV needed — flat-shaded,
     matches the family's low-poly silhouette-first language) radiating from
-    one ground point. Muted green, §17 canon palette range (same tone
-    range as add_moss_patch's own moss green, slightly brighter/more
-    saturated so tufts read as LIVING grass against mossy stone)."""
-    tone = (rng.uniform(0.14, 0.22), rng.uniform(0.27, 0.38), rng.uniform(0.11, 0.18))
+    one ground point. Muted olive/grey-green, §17 canon palette range (same
+    tone RELATIONSHIP as add_moss_patch's own moss green — slightly
+    brighter/more saturated so tufts read as LIVING grass against mossy
+    stone — but re-anchored to add_moss_patch's v16-darkened baseline
+    instead of its old pre-v16 one).
+
+    v16 fix (2026-07-25, poe_visual_bar round 2 — Joan: "new grass sprouts
+    are neon-mint... biome is quiet"). This tone was explicitly designed
+    (see original docstring above) as "slightly brighter than moss" — it
+    inherited moss's OLD bright G-heavy tone (G up to 0.38, ~1.7-2x R/B) as
+    its own baseline, so when add_moss_patch got darkened for its own bug
+    this pass, grass_tuft needed the matching cut to keep the SAME relative
+    relationship, not just an isolated tweak. Also close to the fire/torch
+    point lights placed at 55-95% of the vegetation-reclaim plaza ring
+    radius (build_vegetation_reclaim), which mood_valheim's
+    _tighten_light_pools pushes well past 1.0 in scene-linear units at that
+    range — the same overexposure mechanism as the campfire rocks (see
+    ROCK_TONES' own v16 comment). Darkening the source tone is the
+    mandatory, always-correct half of that fix regardless of proximity."""
+    tone = (rng.uniform(0.11, 0.16), rng.uniform(0.19, 0.26), rng.uniform(0.08, 0.12))
     grass_mat = mat("grass_tuft_%.2f_%.2f_%.2f" % tone, tone, rough=0.9)
     n = rng.randint(3, 5)
     px, py, pz = pos

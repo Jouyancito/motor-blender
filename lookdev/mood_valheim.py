@@ -304,6 +304,28 @@ def _tighten_light_pools(rng):
     # rather than just "less dim than before, proportionally".
     for o in bpy.data.objects:
         if o.type == 'LIGHT' and o.data.type == 'POINT':
+            # v16 fix (2026-07-25, poe_visual_bar round 2 — "campfire ring
+            # rocks + cliff boulders still read pale/white-ish"). ROOT CAUSE
+            # for the NEAR-FIRE rocks specifically (the cliff-line case is a
+            # separate, sky-ambient-driven issue, fixed in _setup_compositor
+            # above): village_gen.py's build_interior/build_destacamento
+            # hand-tune the plaza "firelight" and the *_emberlight point
+            # lights' energy (v15 already cut plaza fl.energy 300->190 and
+            # widened the fire-stone ring 0.8->1.05m specifically to stop
+            # them blowing out the fire_stone_%d rocks sitting right next to
+            # them) — but this blanket per-point-light boost re-multiplies
+            # THAT already-tuned-down value right back up (up to 2.1x, e.g.
+            # 190 -> ~400), silently undoing it. Confirmed this isn't a v15
+            # regression but a pre-existing stacking bug: v14's own plaza
+            # render (fl.energy=300 pre-v15, same 1.7-2.1x boost applied on
+            # top) shows the exact same washed-out white campfire stones.
+            # Exempt these two specific fire-source lights by name — they're
+            # deliberately hand-tuned per-scene for close-range rock/prop
+            # proximity, unlike torches/braziers/window lights (untouched
+            # here, keep their intended "hotspot pop" boost).
+            nm = o.name.lower()
+            if "firelight" in nm or "emberlight" in nm:
+                continue
             o.data.energy = o.data.energy * rng.uniform(1.7, 2.1)
 
 
@@ -798,7 +820,35 @@ def _setup_compositor(scene, biome_style):
             mist_b = s
         elif s.type == 'VALUE' and s.name == 'Factor' and mist_factor is None:
             mist_factor = s
-    fog_color = biome_style.get("fog") or biome_style.get("sky", (0.6, 0.65, 0.7))
+    fog_color = biome_style.get("fog")
+    if not fog_color:
+        # v16 fix (2026-07-25, poe_visual_bar round 2 — "the sky reads as an
+        # eclipse, still bright grey"). ROOT CAUSE, confirmed via an isolated
+        # bypass-vs-wired A/B render on the same scene/world: with this mist
+        # -tint stage wired in, background/open-sky pixels rendered at
+        # (91.8,100.2,107.7); with the SAME stage bypassed (link routed
+        # straight from `desat`/`grade` to the vignette instead), (32.7,
+        # 33.5,34.2). The v15 dusk-GRADIENT work in `_tune_lights` (this
+        # module) was NOT the broken part — its Background node genuinely IS
+        # linked to a dark ramp (verified separately: `bg.inputs[0].
+        # is_linked == True`, linked from `mood_sky_ramp`). The real bug is
+        # HERE: EEVEE's Mist render pass returns ~1.0 (max distance) for
+        # every pixel where the camera ray hits NO geometry at all — i.e.
+        # every open-sky pixel, not just "distant" ones — so at this stage's
+        # 0-0.32 mix cap, up to 32% of EVERY sky pixel got replaced with
+        # whatever `fog_color` resolved to. A biome with no authored "fog"
+        # style key (pradera) fell back to its own RAW, undarkened `sky`
+        # tuple right here, silently re-brightening the sky back toward noon
+        # -blue specifically on the pixels where the dusk pass mattered
+        # most. This stage's own docstring says it exists to soften DISTANT
+        # GEOMETRY (far palisade, background trees) — never the open sky,
+        # which the World background already owns. Darken the fallback so a
+        # biome with no explicit fog tint doesn't get its sky re-lit by a
+        # pass meant only to haze midground geometry. (Biomes that DO
+        # author their own "fog" — bosque/hielo — are untouched by this
+        # fix; their tint choice is a deliberate style call, not this bug.)
+        sky = biome_style.get("sky", (0.6, 0.65, 0.7))
+        fog_color = tuple(c * 0.30 for c in sky)
     if mist_b is not None:
         mist_b.default_value = (*fog_color, 1.0)
 
