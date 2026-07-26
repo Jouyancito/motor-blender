@@ -677,12 +677,29 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
     shared material reads the same real-world grain size on a huge wall AND
     a tiny picket) -> Mapping (scale = tile size in meters) -> Image Texture
     -> Base Color (+ a Normal Map chain from the nor_gl map, + the Rough map
-    on Roughness when present, both Non-Color). `projection`: 'top'
-    (ground/roof-top: raw world X/Y drives U/V — correct for anything read
-    mostly from above) or 'side' (walls/posts/stakes: the Mapping node's
-    Rotation rotates world Z into the V slot so vertical grain/coursing
-    reads correctly on upright surfaces — an Image Texture node only ever
-    samples 2 of the 3 input vector components, so which 2 axes matters).
+    on Roughness when present, both Non-Color).
+
+    PROJECTION (v17 fix, 2026-07-25 — Joan's in-Blender v15 feedback: "wood
+    texture fine on front faces, STRETCHED LINES on side faces"): the OLD
+    scheme picked ONE fixed pair of axes for the whole object via a Mapping
+    rotation ('top' = world X/Y, 'side' = world X/-Z) — correct for the face
+    that pair actually spans (a house's front wall spans X/Z) but WRONG for
+    every other face of the same box (a side wall spans Y/Z, yet still got
+    sampled along X, which barely changes across that face's width — the
+    texture collapsed to a near-single column stretched across the whole
+    face = the reported vertical stripe). Fixed with Blender's native BOX
+    (triplanar) Image Texture projection instead: each of the 3 world axes
+    gets its own planar sample, blended per-fragment by the ACTUAL face
+    normal — every face (front, side, top, even a diagonally-rotated strut)
+    automatically reads the pair of axes it actually spans, with no manual
+    per-projection axis bookkeeping needed. `projection` is kept as a param
+    (still used as part of the cache key + still communicates INTENT at each
+    call site — 'top' for ground/roof, 'side'/'side_local' for walls/posts)
+    but no longer changes the node graph itself; Vector is always WORLD
+    Position (Geometry node) so tiling stays consistent across separate
+    objects/meshes (a wall and a fence post sharing the material tile at the
+    same real-world size), and BOX projection's own per-face blend replaces
+    the old rotation hack for every projection value.
     Cached by (key, projection, scale, tint) — every call site sharing all
     four reuses one material, exactly like mat()'s own cache.
 
@@ -707,40 +724,27 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
     bsdf.inputs["Base Color"].default_value = (*fallback_color, 1.0)
     bsdf.inputs["Roughness"].default_value = 0.9
 
+    # BOX/triplanar projection (v17 fix — see docstring above): ALWAYS
+    # world-space Position feeding the Mapping node (tiling stays a
+    # consistent real-world size across every object regardless of its own
+    # rotation/scale — the diagonal-strut shear the old 'side_local' hack
+    # worked around is now handled by BOX projection's own per-face normal
+    # blend instead, so a single code path covers flat walls, posts, AND
+    # diagonal braces).
     mapping = nt.nodes.new("ShaderNodeMapping")
     inv = 1.0 / max(0.001, scale)
     mapping.inputs["Scale"].default_value = (inv, inv, inv)
-    if projection in ('side', 'side_local'):
-        mapping.inputs["Rotation"].default_value = (math.radians(90.0), 0.0, 0.0)
-    if projection == 'side_local':
-        # DIAGONAL-STRUT FIX (v12 round-1 self-eyeball, destacamento render):
-        # world-space Position badly SHEARS the texture on anything that
-        # isn't roughly vertical (tower cross-braces, any strut()/oriented
-        # cone rotated off-axis) — sampling raw world X/Z along a diagonal
-        # member stretches the image unevenly across its length, since the
-        # mapping has no idea the object itself is tilted. TexCoord.Object
-        # (the object's OWN local space, unaffected by its world rotation)
-        # fixes this for any UNSCALED primitive — cylinder()/strut()/
-        # oriented_cone() bake their real-world size into the primitive call
-        # itself (radius=r, depth=h) rather than via object.scale, so local
-        # Z already IS the object's true-length axis regardless of which
-        # way it's rotated in world space. Reserved for "wood_dark" (posts/
-        # stakes/beams/braces — mat()'s routing below); "wood" (wall boxes,
-        # which DO use object.scale to size) stays on world-space 'side' —
-        # see _load_tex_image's caller for why (object-space on a SCALED
-        # box re-introduces the exact same-frequency-different-sizes
-        # mismatch mood_valheim's own bump pass already had to fix once).
-        tex_coord = nt.nodes.new("ShaderNodeTexCoord")
-        nt.links.new(tex_coord.outputs["Object"], mapping.inputs["Vector"])
-    else:
-        geo = nt.nodes.new("ShaderNodeNewGeometry")
-        nt.links.new(geo.outputs["Position"], mapping.inputs["Vector"])
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    nt.links.new(geo.outputs["Position"], mapping.inputs["Vector"])
+    BOX_BLEND = 0.2  # soft blend between the 3 axis projections at each edge
 
     diff_img = _load_tex_image(_tex_path(slug, "diff"), non_color=False)
     if diff_img is not None:
         tex_d = nt.nodes.new("ShaderNodeTexImage")
         tex_d.image = diff_img
         tex_d.extension = 'REPEAT'
+        tex_d.projection = 'BOX'
+        tex_d.projection_blend = BOX_BLEND
         nt.links.new(mapping.outputs["Vector"], tex_d.inputs["Vector"])
         base_color_out = tex_d.outputs["Color"]
         if tint is not None:
@@ -779,6 +783,8 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
         tex_r = nt.nodes.new("ShaderNodeTexImage")
         tex_r.image = rough_img
         tex_r.extension = 'REPEAT'
+        tex_r.projection = 'BOX'
+        tex_r.projection_blend = BOX_BLEND
         nt.links.new(mapping.outputs["Vector"], tex_r.inputs["Vector"])
         if rough_mult != 1.0:
             rm = nt.nodes.new("ShaderNodeMath")
@@ -794,6 +800,8 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
         tex_n = nt.nodes.new("ShaderNodeTexImage")
         tex_n.image = norm_img
         tex_n.extension = 'REPEAT'
+        tex_n.projection = 'BOX'
+        tex_n.projection_blend = BOX_BLEND
         nrm = nt.nodes.new("ShaderNodeNormalMap")
         nt.links.new(mapping.outputs["Vector"], tex_n.inputs["Vector"])
         nt.links.new(tex_n.outputs["Color"], nrm.inputs["Color"])
@@ -963,6 +971,42 @@ def box(name, sx, sy, sz, loc, material):
     ob.data.materials.append(material)
     return ob
 
+def add_structural_finish(ob, bevel=0.03, segments=2):
+    """Structural bevel + weighted normals (v17 fix #3, canon
+    `game/docs/art/_asset_modeling_best_practices.md` practice #1) — kills
+    the "perfect primitive" read Joan called out on house walls/casona/
+    tower up close: a raw `primitive_cube_add`/`primitive_cylinder_add` has
+    a mathematically perfect 90-degree edge no real hand-built log-and-plank
+    structure has. A live Bevel modifier (width in REAL local meters — see
+    the transform_apply below) adds a small real chamfer; Weighted Normal
+    recomputes shading normals off that bevel's actual face areas so the
+    edge reads as a soft real corner catching light, not a flat-shaded
+    facet. Both are RENDER-time modifiers, never applied/baked — village_gen
+    only ever renders lookdev PNGs (+ saves a .blend), it does not export a
+    game-ready mesh, so there is no downstream pipeline that needs the
+    modifier stack collapsed.
+
+    `transform_apply(scale=True)` runs FIRST because `box()` only ever sets
+    `ob.scale` (mesh data stays the -0.5..0.5 unit cube) — without applying
+    that scale, a Bevel modifier's `width` (evaluated in the mesh's OWN
+    local units, same as any other modifier) would get stretched
+    non-uniformly by the object's own (sx, sy, sz), giving a bigger bevel on
+    a wide wall than a narrow one instead of one consistent real-world
+    chamfer. Safe to call on any already-linked mesh object (house walls,
+    casona plinth/wing boxes, tower body/legs) — cylinders/box alike."""
+    bpy.context.view_layer.objects.active = ob
+    ob.select_set(True)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    ob.select_set(False)
+    bev = ob.modifiers.new("StructBevel", 'BEVEL')
+    bev.width = bevel
+    bev.segments = segments
+    bev.limit_method = 'ANGLE'
+    bev.angle_limit = math.radians(35.0)
+    wn = ob.modifiers.new("StructWeightedNormal", 'WEIGHTED_NORMAL')
+    wn.keep_sharp = True
+    return ob
+
 def ellipsoid(name, sx, sy, sz, loc, material):
     bpy.ops.mesh.primitive_uv_sphere_add(segments=10, ring_count=8, radius=1.0, location=loc)
     ob = bpy.context.object
@@ -1120,10 +1164,23 @@ def build_cobweb(name, corner, dir_a, dir_b, rng, scale=0.30):
     faces = [(0, i, i + 1) for i in range(1, n_outer)]
     return mesh_obj(name, verts, faces, mat_cw)
 
-def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18):
-    """Unique low-poly boulder — see game/docs/art/_references/rocks/_synthesis.md."""
+def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18, subdiv=1,
+              scale_lo=0.75, scale_hi=1.3, rot_xy=0.3):
+    """Unique low-poly boulder — see game/docs/art/_references/rocks/_synthesis.md.
+
+    `subdiv`/`scale_lo`/`scale_hi`/`rot_xy` (v17 fix #4, 2026-07-25 — Joan's
+    "perimeter stone wall reads as smooth blobs" note): exposed so a denser
+    fractured-stack read (build_cliff_wall) can dial these up without
+    touching every other make_rock() call site's look — defaults reproduce
+    the exact pre-v17 behavior. `subdiv` (icosphere subdivision level
+    BEFORE noise displacement) gives more verts for the same noise
+    frequency to carve sharper facets into; `scale_lo`/`scale_hi` widen the
+    non-uniform x/y scale range; `rot_xy` widens the tilt range on the x/y
+    axes beyond the original small +/-0.3 rad lean toward the same FULL
+    range the z axis already used — a real fractured stone pile has stones
+    resting at any angle, not just leaning slightly off vertical."""
     bm = bmesh.new()
-    bmesh.ops.create_icosphere(bm, subdivisions=1, radius=base_r)
+    bmesh.ops.create_icosphere(bm, subdivisions=subdiv, radius=base_r)
     bm.normal_update()
     seed_off = Vector((rng.uniform(0, 200), rng.uniform(0, 200), rng.uniform(0, 200)))
     freq = rng.uniform(1.6, 2.6)
@@ -1156,9 +1213,9 @@ def make_rock(name, base_r, loc, rng, flatten=0.65, disp=0.18):
     ob.data.materials.append(mat("rock_%.3f_%.3f_%.3f" % tone, tone))
     link(ob)
     ob.location = loc
-    ob.scale = (rng.uniform(0.75, 1.3), rng.uniform(0.75, 1.3),
+    ob.scale = (rng.uniform(scale_lo, scale_hi), rng.uniform(scale_lo, scale_hi),
                 flatten * rng.uniform(0.75, 1.25))
-    ob.rotation_euler = (rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3),
+    ob.rotation_euler = (rng.uniform(-rot_xy, rot_xy), rng.uniform(-rot_xy, rot_xy),
                          rng.uniform(0, math.tau))
     return ob
 
@@ -1691,7 +1748,11 @@ def window_glass_material():
         if warm:
             b.inputs["Base Color"].default_value = (0.85, 0.55, 0.22, 1.0)
             b.inputs["Emission Color"].default_value = (1.0, 0.62, 0.24, 1.0)
-            b.inputs["Emission Strength"].default_value = 1.8
+            # v17 fix #5 (poe_visual_bar light-pool pass): 1.8 -> 2.4 —
+            # every ZONE of the village should get a readable warm pool
+            # against the dark ambient (canon §17.2.3); windows are the
+            # cheapest, already-everywhere light source to nudge.
+            b.inputs["Emission Strength"].default_value = 2.4
         else:
             b.inputs["Base Color"].default_value = (0.03, 0.03, 0.045, 1.0)
         b.inputs["Roughness"].default_value = 0.3
@@ -2073,7 +2134,7 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
                            mat("wood_floor_%.2f_%.2f_%.2f" % style["wood"],
                                tuple(c * 0.82 for c in style["wood"])))
     else:
-        box(name + "_walls", sx, sy, wall_h, (x, y, base_z + wall_h / 2), mat("wood", style["wood"]))
+        add_structural_finish(box(name + "_walls", sx, sy, wall_h, (x, y, base_z + wall_h / 2), mat("wood", style["wood"])))
 
     post_r = 0.07
     post_h = wall_h + 0.05
@@ -2199,7 +2260,7 @@ def build_casona(name, loc_xy, style, rng):
     # FOUNDATION — taller + more "cut stone" than a hut's thin stone_base
     # slab: the casona visibly SITS ON something (PO principle 1).
     plinth_h = 0.75
-    box(name + "_plinth", sx * 1.14, sy * 1.14, plinth_h, (x, y, z + plinth_h / 2), stone)
+    add_structural_finish(box(name + "_plinth", sx * 1.14, sy * 1.14, plinth_h, (x, y, z + plinth_h / 2), stone))
     # MOSS LOWER BAND (v15, poe_cobble_grass_joints_moss.png — "moss on
     # stone lower edges"): a thin darker-green strip wrapping the plinth's
     # bottom course, slightly proud of the stone so it reads as a distinct
@@ -2236,9 +2297,9 @@ def build_casona(name, loc_xy, style, rng):
     wsx, wsy, wwall_h = sx * 0.45, sy * 0.75, wall_h * 0.72
     wx, wy = x + hx + wsx / 2 - 0.15, y - hy * 0.15  # slight overlap so it reads ATTACHED
     wplinth_h = plinth_h * 0.85
-    box(name + "_wing_plinth", wsx * 1.12, wsy * 1.12, wplinth_h, (wx, wy, z + wplinth_h / 2), stone)
+    add_structural_finish(box(name + "_wing_plinth", wsx * 1.12, wsy * 1.12, wplinth_h, (wx, wy, z + wplinth_h / 2), stone))
     wbase_z = z + wplinth_h
-    box(name + "_wing_walls", wsx, wsy, wwall_h, (wx, wy, wbase_z + wwall_h / 2), wood)
+    add_structural_finish(box(name + "_wing_walls", wsx, wsy, wwall_h, (wx, wy, wbase_z + wwall_h / 2), wood))
     wing_rise = style["roof_pitch"] * (wsy * 0.42)
     build_roof(name + "_wing_roof", wsx, wsy, wing_rise, (wx, wy, wbase_z + wwall_h), style,
                style["casona_roof_kind"], rng)
@@ -2562,8 +2623,14 @@ def build_cliff_wall(cx, cy, ring_radius_fn, cliff_arc, rng, style, wall_h_mult)
         si = 0
         while stack_h < cliff_h_target:
             br = rng.uniform(r_lo, r_hi)
+            # v17 fix #4 (Joan: "perimeter stone wall reads as smooth
+            # blobs"): denser fracture read for the wall specifically —
+            # subdiv=2 (more verts for the noise to carve hard facets
+            # into), a wider non-uniform scale spread, and full-range x/y
+            # tilt (a fractured granite stack, not neatly stacked eggs).
             make_rock("cliff_%s_%d" % (tag, si), br, (x, y, z + stack_h + br * 0.5), rng,
-                      flatten=rng.uniform(0.6, 0.9), disp=0.22)
+                      flatten=rng.uniform(0.6, 0.9), disp=0.26, subdiv=2,
+                      scale_lo=0.55, scale_hi=1.5, rot_xy=math.pi)
             stack_h += br * 0.85
             si += 1
             if si > 4:
@@ -2782,7 +2849,7 @@ def build_tower(cx, cy, ring_heights, style, threat_name):
         # conical cap (+ a small snow tip in snow biomes), and a real
         # ladder (2 rails + rungs) up one side — same fix as item 8 below.
         tower_stone_mat = mat("stone", (0.45, 0.46, 0.50))
-        cylinder("tower_body", 1.5, 7.0, (x, y, z + 3.5), tower_stone_mat, verts_n=12)
+        add_structural_finish(cylinder("tower_body", 1.5, 7.0, (x, y, z + 3.5), tower_stone_mat, verts_n=12))
         win_mat = mat("tower_window_dark", (0.04, 0.04, 0.06), rough=0.3)
         for wi in range(4):
             wa = wi / 4 * math.tau + math.pi / 4
@@ -2832,8 +2899,8 @@ def build_tower(cx, cy, ring_heights, style, threat_name):
         leg_pts = []
         for sx, sy in corners:
             lx, ly = x + sx * half_w, y + sy * half_w
-            cylinder("tower_leg_%d_%d" % (sx, sy), 0.14, total_h,
-                      (lx, ly, z0 + total_h / 2), wood)
+            add_structural_finish(cylinder("tower_leg_%d_%d" % (sx, sy), 0.14, total_h,
+                      (lx, ly, z0 + total_h / 2), wood), bevel=0.015, segments=1)
             leg_pts.append((lx, ly))
         for ridx, frac in enumerate((0.34, 0.68)):
             zc = z0 + total_h * frac
@@ -3025,11 +3092,24 @@ def _catmull_rom(pts, t):
                (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * lt3)
     return x, y
 
-def build_path(p1, p2, width, rng, segs=14, wear=0.5):
+def build_path(p1, p2, width, rng, segs=14, wear=0.5, clip_circle=None):
     """Flattened dirt-earth path ribbon following terrain between two
     points — a low-poly quad strip, height-matched to terrain_h with a
     hair of lift (+0.02) to avoid z-fighting; width jitters per-segment so
     it reads as trampled ground, not a ruler-straight road.
+
+    `clip_circle` (cx, cy, radius) — v17 fix (2026-07-25, Joan's in-Blender
+    v15 feedback: "el camino de tierra queda ENCIMA de las piedras de la
+    plaza — deberia terminar en el borde de la plaza"). A path endpoint that
+    lands INSIDE a circle (typically the plaza's own cobblestone
+    build_ground_patch radius) used to keep sampling all the way to that
+    landmark's exact center, so its ribbon fully overlapped the plaza's
+    paving disc instead of stopping at its edge — two ground meshes
+    stacked/z-fighting instead of meeting cleanly. When set, the curve's
+    sampled t-range is trimmed (via a coarse pre-scan) to the sub-range
+    that lies OUTSIDE the circle, so the ribbon terminates flush at the
+    circle's boundary — architecture principle: surfaces MEET at an edge,
+    they never stack.
 
     DESIRE PATH CURVE (PO v9 item 2, 2026-07-19): the centerline now
     follows a Catmull-Rom spline through `_desire_path_curve`'s
@@ -3057,10 +3137,21 @@ def build_path(p1, p2, width, rng, segs=14, wear=0.5):
     else:
         dirt = mat("dirt_path_w%.2f" % wear, tone, rough=0.95)
     ctrl = _desire_path_curve(p1, p2, rng)
+    t_lo, t_hi = 0.0, 1.0
+    if clip_circle is not None:
+        ccx, ccy, cr = clip_circle
+        N = 40
+        outside_ts = [k / N for k in range(N + 1)
+                      if math.hypot(*(v - c for v, c in zip(_catmull_rom(ctrl, k / N), (ccx, ccy)))) >= cr]
+        if outside_ts:
+            t_lo, t_hi = min(outside_ts), max(outside_ts)
+        # else: the whole curve sits inside the circle (degenerate/very
+        # short hop) — fall back to the unclipped 0..1 range rather than
+        # emit a zero-length ribbon.
     verts, faces, centerline = [], [], []
     prev = None
     for i in range(segs + 1):
-        t = i / segs
+        t = t_lo + (t_hi - t_lo) * i / segs
         x, y = _catmull_rom(ctrl, t)
         centerline.append((x, y))
         # local tangent direction (for the perpendicular ribbon offset) via
@@ -3152,6 +3243,23 @@ def build_well(cx, cy):
     bucket.name = "well_bucket"
     bucket.data.materials.append(wood)
     cylinder("well_bucket_hollow", 0.10, 0.02, (cx, cy, z + 0.65 + 0.095), hole_mat, verts_n=10)
+    # LANTERN (v17 fix #5, poe_visual_bar light-pool pass): the well is a
+    # constant-daily-traffic commons point (TRAFFIC_WEIGHT["well"]=1.0) that
+    # had zero light of its own — a small hanging lantern under the roof
+    # peak, same warm/acotado point-light budget as a torch (not a bigger
+    # brighter one; the goal is one readable pool per ZONE, not more
+    # ambient).
+    lantern_glow = mat("lantern_glass", (1.0, 0.65, 0.25))
+    lg = lantern_glow.node_tree.nodes["Principled BSDF"]
+    lg.inputs["Emission Color"].default_value = (1.0, 0.6, 0.22, 1.0)
+    lg.inputs["Emission Strength"].default_value = 6.0
+    box("well_lantern", 0.10, 0.10, 0.14, (cx, cy, z + 1.55), lantern_glow)
+    wl = bpy.data.lights.new("well_lantern_light", 'POINT')
+    wl.energy = 55.0
+    wl.color = (1.0, 0.58, 0.2)
+    wlo = bpy.data.objects.new("well_lantern_light", wl)
+    wlo.location = (cx, cy, z + 1.55)
+    link(wlo)
     strut("well_bucket_handle", (cx - 0.09, cy, z + 0.65 + 0.11), (cx + 0.09, cy, z + 0.65 + 0.11),
           0.012, wood, verts_n=4)
 
@@ -3585,11 +3693,32 @@ def build_market(cx, cy, count, rng, style):
     no two stalls in the same market match."""
     palette = list(STALL_AWNING_COLORS)
     rng.shuffle(palette)
+    stall_positions = []
     for i in range(count):
         a = (i / count) * math.tau * 0.55 + rng.uniform(-0.2, 0.2)
         r = 2.0 + rng.uniform(-0.2, 0.3)
         sx_, sy_ = cx + math.cos(a) * r, cy + math.sin(a) * r
         build_market_stall("market_stall_%d" % i, sx_, sy_, rng, style, palette[i % len(palette)])
+        stall_positions.append((sx_, sy_))
+    # STALL LANTERN (v17 fix #5, poe_visual_bar light-pool pass): ONE lit
+    # lantern on the first stall's post — the market is a distinct
+    # high-traffic zone (TRAFFIC_WEIGHT["market"]=0.9) that had no light of
+    # its own. Deliberately only one per market (acotado, not every stall)
+    # so it stays a single readable pool, not extra ambient.
+    if stall_positions:
+        lx, ly = stall_positions[0]
+        lz = terrain_h(lx, ly) + 1.55
+        stall_lantern_mat = mat("stall_lantern_glass", (1.0, 0.6, 0.22))
+        slg = stall_lantern_mat.node_tree.nodes["Principled BSDF"]
+        slg.inputs["Emission Color"].default_value = (1.0, 0.58, 0.2, 1.0)
+        slg.inputs["Emission Strength"].default_value = 5.0
+        box("market_lantern", 0.09, 0.09, 0.12, (lx + 0.85, ly, lz), stall_lantern_mat)
+        ml = bpy.data.lights.new("market_lantern_light", 'POINT')
+        ml.energy = 50.0
+        ml.color = (1.0, 0.58, 0.2)
+        mlo = bpy.data.objects.new("market_lantern_light", ml)
+        mlo.location = (lx + 0.85, ly, lz)
+        link(mlo)
 
 # ── Cemetery (PO live addendum, 2026-07-20) ─────────────────────────────────
 # Small graveyard patch — pure ATMOSPHERE, never a core building, hence the
@@ -4189,11 +4318,17 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
         "hut_extra_0": 0.35, "hut_extra_1": 0.35,
     }
     path_polylines = []
+    # PLAZA_CLIP_R must match build_ground_patch's own plaza radius below
+    # (v17 fix #2) — any path segment touching the "plaza" landmark on
+    # either end gets clipped to this circle so the ribbon terminates at
+    # the plaza's paving edge instead of overlapping on top of it.
+    PLAZA_CLIP_R = 2.4
     hub_chain = [k for k in ("gate", "plaza", "casona", "well") if k in landmarks]
     for i in range(len(hub_chain) - 1):
-        dest = hub_chain[i + 1]
-        _, poly = build_path(landmarks[hub_chain[i]], landmarks[dest], 1.4, rng,
-                              wear=TRAFFIC_WEIGHT.get(dest, 0.6))
+        src, dest = hub_chain[i], hub_chain[i + 1]
+        clip = (plaza_x, plaza_y, PLAZA_CLIP_R) if "plaza" in (src, dest) else None
+        _, poly = build_path(landmarks[src], landmarks[dest], 1.4, rng,
+                              wear=TRAFFIC_WEIGHT.get(dest, 0.6), clip_circle=clip)
         path_polylines.append(poly)
     hub = landmarks.get("casona", landmarks["plaza"])
     for hut_key in ("hut_storage", "hut_kitchen", "hut_outhouse", "hut_extra_0", "hut_extra_1"):
@@ -4212,13 +4347,13 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
             path_polylines.append(poly)
             break
     # Trampled dirt plaza around the hearth.
-    build_ground_patch(plaza_x, plaza_y, 2.4, rng, tone=DIRT_PATH_WORN, surface="cobblestone")
+    build_ground_patch(plaza_x, plaza_y, PLAZA_CLIP_R, rng, tone=DIRT_PATH_WORN, surface="cobblestone")
 
     # VEGETATION RECLAIM (v15, poe_visual_bar) — grass/flowers at building
     # bases, plaza margins, path shoulders. MUST run after PLACED_FOOTPRINTS
     # (every house/casona/module placed above already registers into it)
     # and path_polylines (built just above) both exist.
-    build_vegetation_reclaim(plaza_x, plaza_y, 2.4, path_polylines, rng)
+    build_vegetation_reclaim(plaza_x, plaza_y, PLAZA_CLIP_R, path_polylines, rng)
 
     # HANGING DECORATIONS (PO v8 item 3, retuned PO v8.1 item 2, PO v9 item 4
     # 2026-07-19) — strung between NEAREST-NEIGHBOR building pairs instead
@@ -4503,9 +4638,15 @@ else:
         build_cliff_wall(0.0, 0.0, ring_radius, CLIFF_ARC, rng, S_wall, wall_h_mult)
     build_double_gate(0.0, 0.0, RING_R, GATE_ANG, S, T["gate_reinforced"], single=not IN["gate_heavy"],
                        ring_radius_fn=ring_radius)
-    if T["torch_ring"]:
-        build_torches(0.0, 0.0, RING_R, GATE_ANG, S, count=10,
-                       ring_radius_fn=ring_radius, cliff_arc=CLIFF_ARC)
+    # v17 fix #5 (poe_visual_bar light-pool pass): torch ring used to be
+    # ALL-OR-NOTHING, gated purely by the night_predators threat profile —
+    # every other biome/threat's palisade had zero light along its own
+    # perimeter path. Now ALWAYS runs: the full 10-torch ring when the
+    # threat profile calls for it, a sparse 3-torch pass (1-2 readable
+    # pools along the ring path, per the PoE town-square reference) when it
+    # doesn't — never raises ambient, stays acotado either way.
+    build_torches(0.0, 0.0, RING_R, GATE_ANG, S, count=10 if T["torch_ring"] else 3,
+                   ring_radius_fn=ring_radius, cliff_arc=CLIFF_ARC)
     build_tower(0.0, 0.0, ring, S, THREAT_NAME)
     build_interior(0.0, 0.0, RING_R, GATE_ANG, S, T)
     build_scale_ref(0.0, 0.0, RING_R, GATE_ANG)
@@ -4618,6 +4759,14 @@ else:
     _commons_r = RING_R * 0.30
     _well_x, _well_y = _commons_r * 0.5, _commons_r * 0.2
     shot("well_closeup", (_well_x + 1.6, _well_y - 1.8, 1.4), (_well_x, _well_y, 1.0))
+    # GRAZING WALL VERIFICATION (v17 fix #7, 2026-07-25): standing close to
+    # the casona's own +X side wall (hx=sx/2=3.6, from build_casona), looking
+    # nearly along its length at a shallow angle — the exact view that
+    # exposed the "stretched vertical lines on side faces" UV bug (fix #1).
+    # A permanent audit camera, same spirit as fastview/casona_door_closeup:
+    # re-check it every future material/UV round, not a one-off diagnostic.
+    _cw_hx = 7.2 / 2  # casona sx=7.2 (build_casona) -> half-width
+    shot("wall_grazing", (_cw_hx + 0.35, _casona_y - 3.1, 1.6), (_cw_hx + 0.05, _casona_y + 3.6, 1.6))
     if DEST_ACTIVE:
         shot("destacamento", (DEST_CX + DEST_RING_R * 1.7, DEST_CY - DEST_RING_R * 2.0, DEST_RING_R * 1.4),
              (DEST_CX, DEST_CY, 1.5))
