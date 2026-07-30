@@ -339,6 +339,19 @@ OUT_DIR = os.path.abspath(args[1])
 SEED = int(args[2]) if len(args) > 2 else 7
 os.makedirs(OUT_DIR, exist_ok=True)
 rng = random.Random(SEED)
+# DETAIL RNG (v18-A, 2026-07-25 — RNG stability): v17's geometry changes
+# already shifted seed 7's layout once (Joan noticed, round-to-round
+# comparability broke). Every NEW variation draw added in this pass (log
+# diameter/height/top jitter, per-house dimension/pitch/door-offset
+# variety, wood tint extension) is pulled from this SEPARATE stream instead
+# of the shared `rng` — inserting a new rng.uniform() call into the middle
+# of the existing chain would shift every draw after it (module rolls,
+# spot searches, subsequent placements), reshuffling the whole layout for a
+# pure detail pass. `rng` itself keeps the EXACT same call sequence it had
+# at v17 (this pass never adds/removes a call from it), so seed 7's layout
+# stays stable going forward; only items 1/2 (collision + path logic, both
+# structural bug fixes) deliberately move things.
+detail_rng = random.Random("village_gen_detail_%d" % SEED)
 
 MOOD_ARG = args[7] if len(args) > 7 else "on"
 MOOD_ON = MOOD_ARG.strip().lower() not in ("off", "0", "false", "none")
@@ -811,6 +824,53 @@ def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0
     return m
 
 
+# TUBE-PROJECTION VARIANT for cylindrical wood (v18 item 5, 2026-07-25 —
+# Joan's v17 review: "wood texture fine on walls, still stretched streaks on
+# posts/poles/logs"). BOX (triplanar) projection is correct for flat
+# box-shaped geometry (house walls, casona plinth) — 3 world-axis planar
+# samples blended by face normal — but a CYLINDER has no face whose normal
+# points cleanly along one of those 3 axes across its whole curved surface;
+# between the box projection's blend seams the same flat sample gets
+# smeared across the curving surface, which is exactly the "stretched
+# streak" Joan is describing. Blender's dedicated 'TUBE' Image Texture
+# projection wraps a texture around a cylinder's own local axis instead —
+# the correct tool for round members. Implemented as a CLONE of an
+# already-built BOX-projected wood material (never a second texture-pixel
+# pipeline to maintain) with its Image Texture nodes switched to TUBE and
+# fed by the OBJECT's own local coordinates (so each stake/post/stringer
+# wraps around ITS OWN axis correctly regardless of world-space lean/
+# rotation, unlike the world-space Position box projection uses for
+# consistent tiling across separate objects).
+_tube_variant_cache = {}
+def tube_variant(base_mat):
+    """Return a cached TUBE-projected clone of `base_mat` (a mat_textured()
+    result) for use on cylindrical wood meshes — posts, poles, palisade
+    logs, stair stringers. Falls back to `base_mat` unchanged if it isn't a
+    node-based image-textured material (flat mat() colors have nothing to
+    re-project)."""
+    if base_mat is None:
+        return None
+    if base_mat.name in _tube_variant_cache:
+        return _tube_variant_cache[base_mat.name]
+    if not base_mat.use_nodes or base_mat.node_tree is None:
+        return base_mat
+    nt_src = base_mat.node_tree
+    if not any(n.type == 'TEX_IMAGE' for n in nt_src.nodes):
+        _tube_variant_cache[base_mat.name] = base_mat
+        return base_mat
+    dup = base_mat.copy()
+    dup.name = base_mat.name + "_tube"
+    nt = dup.node_tree
+    obj_coord = nt.nodes.new("ShaderNodeTexCoord")
+    for n in nt.nodes:
+        if n.type == 'TEX_IMAGE':
+            n.projection = 'TUBE'
+        if n.type == 'MAPPING':
+            nt.links.new(obj_coord.outputs["Object"], n.inputs["Vector"])
+    _tube_variant_cache[base_mat.name] = dup
+    return dup
+
+
 # Per-biome texture picks (v12 PoE pivot) — hielo gets its OWN snow/stone
 # set (snow_02 ground, rocky_trail path, cobblestone_02 plaza), never the
 # pradera cobblestone_01/thatch verbatim (Joan: hielo needs a distinct cold
@@ -869,13 +929,47 @@ def mat(name, color, rough=0.85):
             _mats[key] = m
     return _mats[key]
 
-def jitter_tone(rng, color, pct=0.07):
+def jitter_tone(rng, color, pct=0.07, hue_drift=0.0):
     """Per-object subtle tone jitter (PO v7 item 6): every house rolls its
     own +/-pct variant of the biome base wood/roof tone so no two houses
     share an identical hex, the same trick the terrain noise already uses.
     Relies on mat()'s cache key including the exact color tuple — a
-    different jittered color always gets its own material automatically."""
-    return tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-pct, pct)))) for c in color)
+    different jittered color always gets its own material automatically.
+
+    `hue_drift` (v18 item 4, 2026-07-25): optional per-CHANNEL independent
+    offset applied on top of the uniform brightness scale above — a plain
+    `c * (1 + jitter)` scale can only make a color lighter/darker, never
+    shift its hue, so two houses could still read as identical wood
+    dressed at different brightness. A small independent nudge per channel
+    is what actually reads as a distinct tint, not just a distinct value."""
+    base = tuple(max(0.0, min(1.0, c * (1.0 + rng.uniform(-pct, pct)))) for c in color)
+    if hue_drift:
+        base = tuple(max(0.0, min(1.0, c + rng.uniform(-hue_drift, hue_drift))) for c in base)
+    return base
+
+def _flame_alpha_fade(nt, alpha_socket, opaque_at_base=0.95, fade_at_tip=0.12):
+    """Object-local-Z alpha fade (v18 item 7, 2026-07-25 — Joan: 'la llama
+    es un poliedro solido opaco'). The flame wedges (oriented_cone, built
+    with primitive_cone_add) are geometrically a hard-edged pyramid — an
+    Emission-only Principled BSDF with no Alpha still renders that pyramid
+    as a SOLID shape with emissive color on top, which reads as a glowing
+    orange rock, not fire. Real flame tapers to nothing at its tip; this
+    fakes that by fading Alpha from opaque at the wedge's own local base
+    (z=-h/2, the wide end where primitive_cone_add puts it) to
+    near-transparent at its local tip (z=+h/2) — EEVEE-friendly (no volume
+    shader), combines with the existing compositor Fog Glow bloom
+    (mood_valheim.py _setup_compositor) so the visible core still blooms."""
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(coord.outputs["Object"], sep.inputs["Vector"])
+    rng_node = nt.nodes.new("ShaderNodeMapRange")
+    rng_node.inputs["From Min"].default_value = -0.35
+    rng_node.inputs["From Max"].default_value = 0.35
+    rng_node.inputs["To Min"].default_value = opaque_at_base
+    rng_node.inputs["To Max"].default_value = fade_at_tip
+    rng_node.clamp = True
+    nt.links.new(sep.outputs["Z"], rng_node.inputs["Value"])
+    nt.links.new(rng_node.outputs["Result"], alpha_socket)
 
 _flame_mat = None
 def flame_material():
@@ -883,9 +977,21 @@ def flame_material():
     if _flame_mat is None:
         m = bpy.data.materials.new("flame")
         m.use_nodes = True
-        b = m.node_tree.nodes["Principled BSDF"]
+        nt = m.node_tree
+        b = nt.nodes["Principled BSDF"]
+        b.inputs["Base Color"].default_value = (0.04, 0.015, 0.0, 1.0)
         b.inputs["Emission Color"].default_value = (1.0, 0.45, 0.1, 1.0)
         b.inputs["Emission Strength"].default_value = 6.0
+        alpha_in = b.inputs.get("Alpha")
+        if alpha_in is not None:
+            _flame_alpha_fade(nt, alpha_in, opaque_at_base=0.95, fade_at_tip=0.12)
+        try:
+            m.surface_render_method = 'BLENDED'
+        except Exception:
+            try:
+                m.blend_method = 'BLEND'
+            except Exception:
+                pass
         _flame_mat = m
     return _flame_mat
 
@@ -893,14 +999,28 @@ _flame_inner_mat = None
 def flame_inner_material():
     """Bright yellow inner-flame layer (PO v8.1 item 3, 2026-07-19) — paired
     with flame_material() (orange outer layer) to build a real two-tone fire
-    instead of one flat-colored placeholder cone."""
+    instead of one flat-colored placeholder cone. Same v18 item 7 alpha
+    fade as the outer layer, tuned to stay hotter/more opaque a bit longer
+    (this is the bright core, not the tapering tongue)."""
     global _flame_inner_mat
     if _flame_inner_mat is None:
         m = bpy.data.materials.new("flame_inner")
         m.use_nodes = True
-        b = m.node_tree.nodes["Principled BSDF"]
+        nt = m.node_tree
+        b = nt.nodes["Principled BSDF"]
+        b.inputs["Base Color"].default_value = (0.06, 0.03, 0.0, 1.0)
         b.inputs["Emission Color"].default_value = (1.0, 0.85, 0.35, 1.0)
         b.inputs["Emission Strength"].default_value = 11.0
+        alpha_in = b.inputs.get("Alpha")
+        if alpha_in is not None:
+            _flame_alpha_fade(nt, alpha_in, opaque_at_base=1.0, fade_at_tip=0.25)
+        try:
+            m.surface_render_method = 'BLENDED'
+        except Exception:
+            try:
+                m.blend_method = 'BLEND'
+            except Exception:
+                pass
         _flame_inner_mat = m
     return _flame_inner_mat
 
@@ -1837,34 +1957,45 @@ def build_stairs(name, x, y0, z0, z1, steps, style, width=0.9):
     # STRINGERS — diagonal support beam under each outer edge, ground to
     # platform, so the staircase reads as ONE connected structure.
     run = steps * tread
+    wood_round = tube_variant(wood)  # v18 item 5 — stringers are round struts, steps are boxes
     for side in (-1, 1):
         sx_ = x + side * (width / 2 - 0.03)
         p_ground = (sx_, y0 - run, z0 + 0.03)
         p_top = (sx_, y0, z1 + 0.03)
-        strut("%s_stringer_%d" % (name, side), p_ground, p_top, 0.05, wood, verts_n=4)
+        strut("%s_stringer_%d" % (name, side), p_ground, p_top, 0.05, wood_round, verts_n=4)
 
 # ── Enterable interiors — real wall gap + furniture (PO v7 item 4) ─────────
 def build_shell_walls(name, sx, sy, wall_h, base_z, x, y, door_w, door_h,
-                       wood_mat, floor_mat, wall_thick=0.10):
+                       wood_mat, floor_mat, wall_thick=0.10, door_x=None):
     """Hollow wall SHELL with a real door opening, replacing the old single
     solid `box()` used for every house — that box had no cavity at all, so
     the door/windows were purely cosmetic insets on solid geometry ("no es
     una puerta, es una mancha oscura", PO v7 item 4). Front (-Y) wall is
     split into two side segments + a header above the door gap; back/left/
     right stay solid slabs — together they form an actual box you can see
-    (and the mannequin could walk) into."""
+    (and the mannequin could walk) into.
+
+    `door_x` (v18 item 4, 2026-07-25): the door GAP's own center, distinct
+    from the wall's center `x` — lets house() offset the door along the
+    front wall instead of every hut sharing the exact same dead-center
+    placement. Defaults to `x` (centered, unchanged behavior) for callers
+    that don't pass it (build_casona's own door stays centered)."""
+    if door_x is None:
+        door_x = x
     hx, hy = sx / 2, sy / 2
     half_gap = door_w / 2 + 0.05
-    seg_w = hx - half_gap
-    if seg_w > 0.05:
-        for side in (-1, 1):
-            seg_cx = x + side * (half_gap + seg_w / 2)
-            box("%s_frontwall_%d" % (name, side), seg_w, wall_thick, wall_h,
-                (seg_cx, y - hy + wall_thick / 2, base_z + wall_h / 2), wood_mat)
+    left_w = (door_x - half_gap) - (x - hx)
+    right_w = (x + hx) - (door_x + half_gap)
+    if left_w > 0.05:
+        box(name + "_frontwall_left", left_w, wall_thick, wall_h,
+            (x - hx + left_w / 2, y - hy + wall_thick / 2, base_z + wall_h / 2), wood_mat)
+    if right_w > 0.05:
+        box(name + "_frontwall_right", right_w, wall_thick, wall_h,
+            (x + hx - right_w / 2, y - hy + wall_thick / 2, base_z + wall_h / 2), wood_mat)
     header_h = wall_h - door_h
     if header_h > 0.05:
         box(name + "_frontheader", door_w + 0.10, wall_thick, header_h,
-            (x, y - hy + wall_thick / 2, base_z + door_h + header_h / 2), wood_mat)
+            (door_x, y - hy + wall_thick / 2, base_z + door_h + header_h / 2), wood_mat)
     box(name + "_backwall", sx, wall_thick, wall_h, (x, y + hy - wall_thick / 2, base_z + wall_h / 2), wood_mat)
     box(name + "_leftwall", wall_thick, sy, wall_h, (x - hx + wall_thick / 2, y, base_z + wall_h / 2), wood_mat)
     box(name + "_rightwall", wall_thick, sy, wall_h, (x + hx - wall_thick / 2, y, base_z + wall_h / 2), wood_mat)
@@ -2078,6 +2209,16 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
     hstyle["wood"] = jitter_tone(rng, style["wood"])
     hstyle["wood_dark"] = jitter_tone(rng, style["wood_dark"])
     hstyle["roof"] = jitter_tone(rng, style["roof"])
+    # TINT HOOK EXTENSION (v18 item 4, 2026-07-25 — "extend the per-house
+    # wood tint hook from c5a2d91"): the jitter above only ever scales
+    # brightness (a uniform per-channel multiplier), so two houses can still
+    # read as the same hue at different lightness. Layers an independent
+    # per-channel hue DRIFT on top via detail_rng (a NEW draw, kept off the
+    # shared `rng` — see the module-level detail_rng comment) so houses
+    # genuinely vary in tint, not just value.
+    hstyle["wood"] = jitter_tone(detail_rng, hstyle["wood"], pct=0.05, hue_drift=0.025)
+    hstyle["wood_dark"] = jitter_tone(detail_rng, hstyle["wood_dark"], pct=0.05, hue_drift=0.025)
+    hstyle["roof"] = jitter_tone(detail_rng, hstyle["roof"], pct=0.05, hue_drift=0.02)
     style = hstyle
     if stone_base is None:
         stone_base = rng.random() < style["stone_base_chance"]
@@ -2117,7 +2258,7 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
             sh = max(0.3, floor_z - sgz)
             cylinder(name + "_stilt_%d_%d" % (cx_, cy_), post_r, sh,
                       (spx, spy, sgz + sh / 2),
-                      mat("wood_dark", style["wood_dark"]), verts_n=8)
+                      tube_variant(mat("wood_dark", style["wood_dark"])), verts_n=8)
         box(name + "_floor", sx * 1.06, sy * 1.06, 0.12, (x, y, floor_z), mat("wood", style["wood"]))
         base_z = floor_z + 0.06
         build_stairs(name + "_stairs", x, y - sy / 2, z, base_z, max(3, int(stilt_h / 0.24)), style)
@@ -2126,13 +2267,22 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
     # size (PO v7 item 4). Sized against MANNEQUIN_H (printed at the end).
     door_w, door_h, door_mat, frame_mat = add_door(name, x, y, base_z, sx, wall_h, style)
 
+    # DOOR PLACEMENT VARIETY (v18 item 4, 2026-07-25): every hut used to put
+    # its door dead-center on the front wall, seed after seed. A NEW
+    # detail_rng draw (kept off the shared `rng`) offsets it along the wall
+    # within the margin that still leaves both wall segments standing.
+    door_max_off = max(0.0, sx / 2 - door_w / 2 - 0.18)
+    door_off = detail_rng.uniform(-door_max_off, door_max_off) if door_max_off > 0.05 else 0.0
+    door_x = x + door_off
+
     if real_door:
         # ENTERABLE — an actual gap in the wall, not a dark inset (PO v7
         # item 4: "no es una puerta, es una mancha oscura").
         build_shell_walls(name, sx, sy, wall_h, base_z, x, y, door_w, door_h,
                            mat("wood", style["wood"]),
                            mat("wood_floor_%.2f_%.2f_%.2f" % style["wood"],
-                               tuple(c * 0.82 for c in style["wood"])))
+                               tuple(c * 0.82 for c in style["wood"])),
+                           door_x=door_x)
     else:
         add_structural_finish(box(name + "_walls", sx, sy, wall_h, (x, y, base_z + wall_h / 2), mat("wood", style["wood"])))
 
@@ -2141,9 +2291,9 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
     for cx_, cy_ in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
         cylinder(name + "_post_%d_%d" % (cx_, cy_), post_r, post_h,
                   (x + cx_ * sx / 2, y + cy_ * sy / 2, base_z + post_h / 2),
-                  mat("wood_dark", style["wood_dark"]), verts_n=6)
+                  tube_variant(mat("wood_dark", style["wood_dark"])), verts_n=6)
 
-    build_door_at(name + "_door", x, y - sy / 2, base_z, door_w, door_h, door_mat, frame_mat,
+    build_door_at(name + "_door", door_x, y - sy / 2, base_z, door_w, door_h, door_mat, frame_mat,
                    no_slab=real_door)
     if chest:
         # Loot chest lives INSIDE the storage hut now (PO v7 item 4 — never
@@ -2158,7 +2308,12 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
         build_window_at(name + "_win_%d_%d" % (side, int((yfrac + 1) * 100)),
                           x, y + yfrac * sy, side, sx / 2, win_h_center, style)
 
-    rise = style["roof_pitch"] * (sy * 0.45)
+    # ROOF PITCH VARIETY (v18 item 4, 2026-07-25): roof_kind already rolls
+    # per-house (roll_weighted below), but the PITCH itself was one flat
+    # biome-wide constant — every hut's roof rose by the exact same amount
+    # relative to its own footprint. New detail_rng draw, layered on top.
+    pitch_mult = 1.0 + detail_rng.uniform(-0.18, 0.22)
+    rise = style["roof_pitch"] * pitch_mult * (sy * 0.45)
     kind = roof_kind or ("thatch" if thatch else roll_weighted(rng, style["roof_kinds"]))
     build_roof(name + "_roof", sx, sy, rise, (x, y, base_z + wall_h), style, kind, rng)
 
@@ -2196,7 +2351,7 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
             pole_h = max(0.10, porch_top_z - pgz)
             cylinder(name + "_porch_pole_%d" % px, 0.06, pole_h,
                       (ppx, ppy, pgz + pole_h / 2),
-                      mat("wood_dark", style["wood_dark"]), verts_n=6)
+                      tube_variant(mat("wood_dark", style["wood_dark"])), verts_n=6)
         box(name + "_porch_roof", sx * 0.7, 1.1, 0.12,
             (x, y - sy / 2 - 0.5, porch_top_z + 0.06),
             mat("wood_dark", style["wood_dark"]))
@@ -2208,9 +2363,9 @@ def house(name, sx, sy, wall_h, loc_xy, style, stone_base=None,
             # the rack sits away from the house's own terrain sample.
             rgz = terrain_h(rx + px, ry)
             cylinder(name + "_rack_post_%d" % int(px * 10), 0.045, rz - rgz, (rx + px, ry, (rz + rgz) / 2),
-                      mat("wood_dark", style["wood_dark"]), verts_n=6)
+                      tube_variant(mat("wood_dark", style["wood_dark"])), verts_n=6)
         strut(name + "_rack_pole", (rx - 0.6, ry, rz), (rx + 0.6, ry, rz), 0.03,
-              mat("wood_dark", style["wood_dark"]))
+              tube_variant(mat("wood_dark", style["wood_dark"])))
         cloth = mat("cloth_hide", (0.55, 0.45, 0.32))
         for i in range(3):
             box(name + "_rack_hide_%d" % i, 0.03, 0.35, 0.55,
@@ -2281,7 +2436,8 @@ def build_casona(name, loc_xy, style, rng):
                        mat("wood_floor_casona", tuple(c * 0.82 for c in style["wood"])))
     for cx_, cy_ in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
         cylinder(name + "_post_%d_%d" % (cx_, cy_), 0.10, wall_h + 0.06,
-                  (x + cx_ * hx, y + cy_ * hy, base_z + (wall_h + 0.06) / 2), wood_dark, verts_n=8)
+                  (x + cx_ * hx, y + cy_ * hy, base_z + (wall_h + 0.06) / 2),
+                  tube_variant(wood_dark), verts_n=8)
         # HANDMADE-IMPERFECTION (v11 item 14) — casona framing gets the
         # same knot/moss treatment as the palisade/roof members.
         if rng.random() < 0.30:
@@ -2401,6 +2557,52 @@ def build_casona(name, loc_xy, style, rng):
             mat("stone", (0.45, 0.46, 0.50)))
     return base_z + wall_h
 
+def add_stake_top(name, r, base_pt, rng, parent=None, wood_mat=None):
+    """Irregular axe-cut log top (v18 item 3, 2026-07-25 — Joan's v17
+    review: 'los troncos... techos perfectamente planos', every stake used
+    a shared symmetric `primitive_cone_add` tip — identical pointed shape
+    on every single log regardless of seed). Replaces that with a bmesh fan
+    unique to THIS stake: a jittered top rim (radius + height both uneven,
+    "rough-cut" rather than a lathe-clean circle) fanned to an apex offset
+    off-center and at a randomized height — sometimes a shallow near-flat
+    axe-cut, sometimes a taller off-axis point, per the palisade reference
+    (village_palisade/_synthesis.md: 'axe-cut roughly flat to a shallow
+    point... height of the cut point varies log-to-log'), never the same
+    cone twice. Uses `rng` (should be `detail_rng` at the call site — a
+    NEW draw, kept off the shared layout `rng` per this pass's RNG
+    stability rule)."""
+    bm = bmesh.new()
+    n_top = rng.randint(5, 7)
+    ring = []
+    for k in range(n_top):
+        ang = k / n_top * math.tau
+        rr = r * rng.uniform(0.80, 1.05)
+        zz = r * rng.uniform(-0.35, 0.45)  # rough uneven rim, not a clean flat circle
+        ring.append(bm.verts.new((math.cos(ang) * rr, math.sin(ang) * rr, zz)))
+    apex_h = r * rng.uniform(0.6, 2.2)  # shallow axe-cut .. tall knife-point, per log
+    apex = bm.verts.new((r * rng.uniform(-0.4, 0.4), r * rng.uniform(-0.4, 0.4), apex_h))
+    center = bm.verts.new((0.0, 0.0, 0.0))
+    bm.verts.ensure_lookup_table()
+    for k in range(n_top):
+        a, b = ring[k], ring[(k + 1) % n_top]
+        bm.faces.new((a, b, apex))       # side facet up to the apex
+        bm.faces.new((b, a, center))     # base cap closing against the trunk top
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    for f in me.polygons:
+        f.use_smooth = False
+    ob = bpy.data.objects.new(name, me)
+    ob.location = base_pt
+    if wood_mat is not None:
+        ob.data.materials.append(wood_mat)
+    link(ob)
+    if parent is not None:
+        ob.parent = parent
+        ob.matrix_parent_inverse = parent.matrix_world.inverted()
+    return ob
+
 # ── STRUCTURE: palisade ring + double gate ────────────────────────────────────
 GATE_ANG = -math.pi / 2  # gate faces -Y (camera side)
 
@@ -2443,7 +2645,11 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
     # gives every stake ONE OF 3 weathered wood-tint variants instead of one
     # shared material for the whole ring (2-3 tint variants per Joan's ask).
     wood_base = mat("wood_dark", style["wood_dark"])
-    stake_wood_mats = [mat("wood_dark", jitter_tone(rng, style["wood_dark"], pct=0.13))
+    # v18 item 5: stake TRUNKS are cylinders, not boxes — the shared BOX
+    # projection (correct on the flat rails below, which stay `wood_base`)
+    # stretches on a curved surface. tube_variant() gives the round trunk +
+    # its irregular top their own cylindrical wrap.
+    stake_wood_mats = [tube_variant(mat("wood_dark", jitter_tone(rng, style["wood_dark"], pct=0.13)))
                         for _ in range(3)]
     rope_mat = mat("rope_lashing", (0.40, 0.31, 0.17), rough=0.95)
     wood = wood_base
@@ -2470,21 +2676,25 @@ def build_palisade(cx, cy, ring_r, gate_ang, style, wall_h_mult, ring_radius_fn=
         x, y = cx + math.cos(a) * rr, cy + math.sin(a) * rr
         z = terrain_h(x, y)
         h = style["stake_h"] * wall_h_mult * (1.0 + rng.uniform(-0.18, 0.18) * j)
+        # v18 item 3 (extra per-log height variance) — a NEW draw layered on
+        # top of the existing `rng`-driven jitter above via the separate
+        # detail_rng stream, so `rng`'s own call sequence (and therefore
+        # every placement decision downstream) stays byte-identical to v17.
+        h *= (1.0 + detail_rng.uniform(-0.15, 0.15) * j)
         # MIXED DIAMETERS (v11 item 14, HANDMADE-IMPERFECTION) — used to be
         # a FIXED radius on any biome with palisade_touching unset/False
         # (hielo), so its stakes were perfectly uniform. Every stake now
         # varies +/-, touching or not.
         r = style["stake_r"] * (1.0 + rng.uniform(-0.15, 0.35))
+        r *= (1.0 + detail_rng.uniform(-0.20, 0.20))  # v18 item 3: extra per-log diameter variance
         stake_wood = stake_wood_mats[rng.randrange(len(stake_wood_mats))]
         st = cylinder("stake_%d" % i, r, h, (x, y, z + h / 2), stake_wood)
-        tip_h = r * 1.8
-        bpy.ops.mesh.primitive_cone_add(vertices=10, radius1=r, depth=tip_h,
-            location=(x, y, z + h / 2 + tip_h / 2))
-        cone = bpy.context.object
-        cone.name = "stake_%d_tip" % i
-        cone.data.materials.append(stake_wood)
-        cone.parent = st
-        cone.matrix_parent_inverse = st.matrix_world.inverted()
+        # IRREGULAR TOP (v18 item 3, 2026-07-25 — Joan: every stake shared
+        # one machine-symmetric cone top). add_stake_top() builds a unique
+        # rough-cut/pointed/uneven cap per log via detail_rng instead of the
+        # old shared `primitive_cone_add` — see its own docstring.
+        add_stake_top("stake_%d_tip" % i, r, (x, y, z + h), detail_rng,
+                       parent=st, wood_mat=stake_wood)
         # v15: random Z spin (see the block comment above `wood_base`) —
         # this is what actually varies the visible wood-grain PHASE per
         # log; x/y lean alone left every stake showing the same local-space
@@ -3197,6 +3407,52 @@ def build_ground_patch(cx, cy, radius, rng, tone=DIRT_PATH_WORN, segs=14, surfac
         faces.append((0, 1 + i, 1 + (i + 1) % segs))
     return mesh_obj("ground_patch_%d" % _next_id(), verts, faces, patch_mat)
 
+# ── Plaza ring path (v18 item 2, 2026-07-25) ────────────────────────────────
+# Joan's v17 flight review: "los caminos se pisan entre si y pasan POR ENCIMA
+# de las piedras de la fogata central." A hub-and-spoke path system that aims
+# every segment at the plaza's exact CENTER inevitably threads a straight
+# line through whatever sits there (the campfire). The fix is a literal
+# worn walking CIRCLE around the fire — every spoke joins the circle at the
+# point closest to its own approach angle instead of continuing to the
+# center, so no path segment's centerline ever needs to cross the fire at
+# all (removes the overlap at the source, not just via `clip_circle`
+# trimming after the fact).
+def build_plaza_ring(cx, cy, r, width, rng, segs=28):
+    """Closed circular worn-path ring around the plaza campfire — same
+    terrain-following quad-strip technique as build_path, but wrapping back
+    to its own first vertex instead of running open-ended. Sits a hair
+    above the plaza's cobblestone disc (build_ground_patch) so it reads as
+    a distinct trodden circle within the paving, same "stones sit ON/above
+    path level" ordering the fire-stone cluster already uses."""
+    if USE_REAL_TEXTURES:
+        tone_mat = mat_textured("path_" + BIOME, PATH_TEX_SLUG[BIOME], scale=2.2, projection='top')
+    else:
+        tone_mat = mat("dirt_path_ring", DIRT_PATH_WORN, rough=0.95)
+    verts, faces = [], []
+    for i in range(segs):
+        a = i / segs * math.tau
+        rr = r * (1.0 + rng.uniform(-0.05, 0.05))
+        w = width * (1.0 + rng.uniform(-0.10, 0.10))
+        cxi, cyi = cx + math.cos(a) * rr, cy + math.sin(a) * rr
+        z = terrain_h(cxi, cyi) + 0.025
+        nx, ny = math.cos(a), math.sin(a)  # radial direction — ring band spans across it
+        verts.append((cxi + nx * w / 2, cyi + ny * w / 2, z))
+        verts.append((cxi - nx * w / 2, cyi - ny * w / 2, z))
+    for i in range(segs):
+        a, b = i * 2, i * 2 + 1
+        c, d = ((i + 1) % segs) * 2, ((i + 1) % segs) * 2 + 1
+        faces.append((a, b, d, c))
+    return mesh_obj("plaza_ring_%d" % _next_id(), verts, faces, tone_mat)
+
+def _plaza_ring_point(from_xy, plaza_xy, r_ring):
+    """Point on the plaza ring closest to the direction `from_xy` approaches
+    from — the target a hub-chain spoke aims at instead of the plaza's raw
+    center, so it joins the ring tangentially rather than cutting through
+    the fire circle it encloses."""
+    dx, dy = from_xy[0] - plaza_xy[0], from_xy[1] - plaza_xy[1]
+    a = math.atan2(dy, dx) if (dx or dy) else 0.0
+    return (plaza_xy[0] + math.cos(a) * r_ring, plaza_xy[1] + math.sin(a) * r_ring)
+
 # ── Commons zone (well / garden / livestock / crafts) — aldea only ─────────
 def build_well(cx, cy):
     """OBJECT-IDENTITY PASS (v11 item 9, 2026-07-20): the well used to be a
@@ -3213,13 +3469,14 @@ def build_well(cx, cy):
     z = terrain_h(cx, cy)
     stone = mat("stone", (0.47, 0.47, 0.44))
     wood = mat("wood_dark", S["wood_dark"])
+    wood_round = tube_variant(wood)  # v18 item 5 — the two round posts below
     cylinder("well_ring", 0.55, 0.55, (cx, cy, z + 0.275), stone, verts_n=12)
     # SHAFT HOLE — a dark disc recessed just under the ring's rim reads as
     # a genuine opening rather than the ring's solid top face.
     hole_mat = mat("well_hole_dark", (0.03, 0.03, 0.035), rough=0.95)
     cylinder("well_hole", 0.40, 0.10, (cx, cy, z + 0.50), hole_mat, verts_n=12)
     for px in (-0.55, 0.55):
-        cylinder("well_post_%.2f" % px, 0.05, 1.3, (cx + px, cy, z + 0.55 + 0.65), wood, verts_n=6)
+        cylinder("well_post_%.2f" % px, 0.05, 1.3, (cx + px, cy, z + 0.55 + 0.65), wood_round, verts_n=6)
     gable_roof("well_roof", 1.4, 1.4, 0.68, (cx, cy, z + 1.9), mat("roof", S["roof"]))
     # ROPE — short multi-segment polyline with a slight outward bulge
     # (implies slack) instead of one rigid straight stick.
@@ -3419,44 +3676,6 @@ def build_goat(cx, cy, cz, rng, pose=None):
     tail.rotation_euler = (math.radians(-25), 0, 0)
 
 
-def build_chicken(cx, cy, cz, rng, pose=None):
-    """Real-silhouette chicken (PO v7 item 3): body + small head + beak +
-    tail wedge + 2 legs.
-
-    POSE VARIETY (PO v8 item 6): `pose` in {'normal','pecking'} (rolled
-    per-bird if None) — a scattered flock should show some mid-peck (body
-    tilted forward, head down at the ground), not every bird standing
-    identically upright. Real motion is GAME-SIDE (Godot); this only varies
-    the static pose."""
-    pose = pose or ("pecking" if rng.random() < 0.4 else "normal")
-    n = _next_id()
-    tones = [(0.85, 0.82, 0.75), (0.55, 0.38, 0.22), (0.25, 0.22, 0.20)]
-    tone = tones[rng.randrange(len(tones))]
-    body_mat = mat("chicken_%.2f_%.2f_%.2f" % tone, tone, rough=0.9)
-    beak_mat = mat("chicken_beak", (0.85, 0.55, 0.12), rough=0.5)
-    leg_mat = mat("chicken_leg", (0.75, 0.45, 0.12), rough=0.6)
-    body_h = 0.16
-    body_tilt = math.radians(24) if pose == "pecking" else 0.0
-    body = ellipsoid("chicken_%d_body" % n, 0.11, 0.09, body_h, (cx, cy, cz + body_h), body_mat)
-    body.rotation_euler = (0, body_tilt, 0)
-    if pose == "pecking":
-        head_z = cz + body_h * 0.5   # down near the ground — the peck
-        head_x = cx + 0.15
-    else:
-        head_z = cz + body_h * 2.0
-        head_x = cx + 0.09
-    ellipsoid("chicken_%d_head" % n, 0.045, 0.045, 0.045, (head_x, cy, head_z), body_mat)
-    bpy.ops.mesh.primitive_cone_add(vertices=5, radius1=0.02, depth=0.05, location=(head_x + 0.06, cy, head_z))
-    beak = bpy.context.object
-    beak.name = "chicken_%d_beak" % n
-    beak.data.materials.append(beak_mat)
-    beak.rotation_euler = (0, math.radians(90) + body_tilt, 0)
-    tail_z = cz + body_h * (1.7 if pose == "pecking" else 1.5)
-    box("chicken_%d_tail" % n, 0.03, 0.09, 0.10, (cx - 0.12, cy, tail_z), body_mat)
-    for ly in (-0.03, 0.03):
-        strut("chicken_%d_leg_%d" % (n, int(ly * 100)), (cx, cy + ly, cz + 0.06), (cx, cy + ly, cz - 0.02),
-              0.012, leg_mat, verts_n=4)
-
 def build_livestock_pen(cx, cy, rng, size="small"):
     """Sheep pen — footprint AND flock size scale together (PO v7 item 3
     coherence rule: 'big pen 6-8 sheep, small pen 2-3', never a fixed count
@@ -3507,18 +3726,29 @@ def build_livestock_pen(cx, cy, rng, size="small"):
             build_sheep(ax, ay, az, rng, pose=pose)
 
 def build_coop(cx, cy, rng, style):
-    """Small chicken coop + a few chickens scratching nearby (PO v7 item 3
-    — 'chickens near a coop')."""
+    """Small chicken coop structure — box + gable roof + ramp.
+
+    CREATURES REMOVED (v18 item 6, 2026-07-25 — Joan: "los pollos son mesh
+    estatico, sacalos"): chickens used to be static decoration geometry
+    baked directly into this recipe (build_chicken(), now deleted). Live
+    creatures belong to the game's bestiary/AI, not a procedural structure
+    generator. THIS COOP IS A CREATURE SPAWN POINT — (cx, cy) is where the
+    game should spawn its own chicken entities (with real AI/animation)
+    around the empty structure; this generator only ever ships the building."""
     z = terrain_h(cx, cy)
     wood = mat("wood_dark", style["wood_dark"])
     box("coop_box", 1.0, 0.8, 0.55, (cx, cy, z + 0.275), mat("wood", style["wood"]))
     gable_roof("coop_roof", 1.15, 0.95, 0.3, (cx, cy, z + 0.55), mat("roof", style["roof"]))
     box("coop_ramp", 0.3, 0.5, 0.05, (cx, cy - 0.55, z + 0.12), wood)
+    # RNG-STABILITY NO-OP (v18, see module-level detail_rng comment): the
+    # chicken loop used to consume rng.randint()+2*rng.uniform() per bird —
+    # keeping the same draws (without building geometry) means every
+    # placement decision AFTER this coop in the shared `rng` stream stays
+    # exactly where v17 left it, instead of reshuffling from a pure content
+    # removal.
     for i in range(rng.randint(3, 5)):
-        a = rng.uniform(0, math.tau)
-        r = rng.uniform(0.6, 1.4)
-        cx2, cy2 = cx + math.cos(a) * r, cy + math.sin(a) * r
-        build_chicken(cx2, cy2, terrain_h(cx2, cy2), rng)
+        rng.uniform(0, math.tau)
+        rng.uniform(0.6, 1.4)
 
 def build_storage_shed(cx, cy, rng, style):
     """Small utility lean-to (PO v7 item 2 density) — cheaper than a full
@@ -3669,9 +3899,10 @@ def build_market_stall(name, cx, cy, rng, style, color):
     z = terrain_h(cx, cy)
     wood = mat("wood_dark", style["wood_dark"])
     w, d, h = 1.6, 1.1, 1.7
+    wood_round = tube_variant(wood)  # v18 item 5 — the 4 posts are cylinders, the counter isn't
     for sx_, sy_ in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
         cylinder("%s_post_%d_%d" % (name, sx_, sy_), 0.05, h,
-                  (cx + sx_ * w / 2, cy + sy_ * d / 2, z + h / 2), wood, verts_n=6)
+                  (cx + sx_ * w / 2, cy + sy_ * d / 2, z + h / 2), wood_round, verts_n=6)
     awning_mat = mat("market_awning_%.2f_%.2f_%.2f" % color, color, rough=0.85)
     awning = box(name + "_awning", w * 1.15, d * 1.15, 0.06, (cx, cy, z + h + 0.03), awning_mat)
     awning.rotation_euler = (0, 0, rng.uniform(-0.05, 0.05))
@@ -3679,7 +3910,7 @@ def build_market_stall(name, cx, cy, rng, style, color):
     # Goods cluster — barrel + basket + sack, "inventory lives outdoors"
     # (village_lotr synthesis: baskets/barrels/sacks stacked informally).
     cylinder(name + "_barrel", 0.20, 0.42, (cx - w * 0.32, cy + d * 0.30, z + 0.21),
-              mat("wood", style["wood"]), verts_n=9)
+              tube_variant(mat("wood", style["wood"])), verts_n=9)
     basket_mat = mat("market_basket", (0.55, 0.42, 0.24), rough=0.9)
     ellipsoid(name + "_basket", 0.18, 0.18, 0.14, (cx + w * 0.10, cy + d * 0.32, z + 0.14), basket_mat)
     sack_mat = mat("sack_cloth", (0.55, 0.48, 0.34), rough=0.95)
@@ -3690,16 +3921,33 @@ def build_market_stall(name, cx, cy, rng, style, color):
 def build_market(cx, cy, count, rng, style):
     """`count` stalls (2 or 3) clustered near the highest-traffic commons
     point — each shuffled to a DISTINCT color from STALL_AWNING_COLORS so
-    no two stalls in the same market match."""
+    no two stalls in the same market match.
+
+    PER-STALL COLLISION CHECK (v18 item 1, 2026-07-25 — Joan's v17 flight
+    review caught an awning stuck through a wall): the market CENTER used
+    to be the only point ever checked against PLACED_FOOTPRINTS
+    (find_flat_spot at the call site) — each individual stall's own offset
+    position around that center was never itself verified clear, so a
+    stall could still land on top of any structure sitting just outside
+    the center's own clearance radius. Each stall now retries a few angle/
+    radius rolls before giving up on that slot (v18 item 1's own
+    "rejected placements should retry elsewhere or skip" rule)."""
     palette = list(STALL_AWNING_COLORS)
     rng.shuffle(palette)
     stall_positions = []
     for i in range(count):
-        a = (i / count) * math.tau * 0.55 + rng.uniform(-0.2, 0.2)
-        r = 2.0 + rng.uniform(-0.2, 0.3)
-        sx_, sy_ = cx + math.cos(a) * r, cy + math.sin(a) * r
+        sx_ = sy_ = None
+        for _try in range(6):
+            a = (i / count) * math.tau * 0.55 + rng.uniform(-0.2, 0.2)
+            r = 2.0 + rng.uniform(-0.2, 0.3)
+            cand_x, cand_y = cx + math.cos(a) * r, cy + math.sin(a) * r
+            if spot_clear(cand_x, cand_y, 1.4, min_gap=0.5):
+                sx_, sy_ = cand_x, cand_y
+                break
+        if sx_ is None:
+            continue  # every retry collided — skip this stall rather than overlap
         build_market_stall("market_stall_%d" % i, sx_, sy_, rng, style, palette[i % len(palette)])
-        stall_positions.append((sx_, sy_))
+        stall_positions.append((sx_, sy_))  # build_market_stall() already registers its own footprint
     # STALL LANTERN (v17 fix #5, poe_visual_bar light-pool pass): ONE lit
     # lantern on the first stall's post — the market is a distinct
     # high-traffic zone (TRAFFIC_WEIGHT["market"]=0.9) that had no light of
@@ -4052,6 +4300,22 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     landmarks = {"gate": (cx + math.cos(gate_ang) * (ring_r - 5.0),
                           cy + math.sin(gate_ang) * (ring_r - 5.0))}
 
+    # CASONA FOOTPRINT PRE-REGISTRATION (v18 item 1 fix, 2026-07-25 — Joan's
+    # v17 flight review: "a blue awning spawned inside the casona, a red
+    # awning stuck through its wall"). The casona's position is a fixed
+    # formula (cx, cy + commons_r*0.85 — no RNG involved), so its collision
+    # footprint is knowable immediately. It used to only get registered
+    # into PLACED_FOOTPRINTS when build_casona() itself actually ran, much
+    # later in this function (right before the FLOWER CLUSTERS section) —
+    # every spot search that runs BEFORE that point (market, granary,
+    # storage_shed, livestock_pen, coop, garden) was blind to the casona
+    # and could freely land inside it. Registering here, before any of
+    # those searches, fixes the root cause without moving WHEN
+    # build_casona() itself is called (which still happens at its original
+    # spot below — moving that would shift every rng draw after it).
+    casona_xy = (cx, cy + commons_r * 0.85)
+    register_footprint(casona_xy[0], casona_xy[1], 5.5)
+
     # COMMONS HUB — well, plaza/hearth, crafts, garden plots: all near center.
     plaza_x, plaza_y = cx, cy - commons_r * 0.45
     landmarks["plaza"] = (plaza_x, plaza_y)
@@ -4140,7 +4404,13 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
         build_garden(gx, gy, gi, rng)
         register_footprint(gx, gy, 1.1)
     if rolled["market"]:
-        spot = find_flat_spot(cx, cy, commons_r * 0.55, commons_r * 1.05, gate_ang, foot_r=2.2)
+        # v18 item 1: foot_r widened 2.2 -> 3.2 — build_market spreads its
+        # individual stalls up to r~2.3 from THIS center point, each with
+        # its own ~0.6-1.4 footprint, so the true worst-case reach is closer
+        # to 3.2m, not 2.2m. The old 2.2 only guaranteed the CENTER point
+        # was clear, not the stalls actually built around it — the direct
+        # cause of an awning clipping into a neighboring structure.
+        spot = find_flat_spot(cx, cy, commons_r * 0.55, commons_r * 1.05, gate_ang, foot_r=3.2)
         if spot:
             build_market(spot[0], spot[1], rolled["market"], rng, style)
             landmarks["market"] = (spot[0], spot[1])
@@ -4200,10 +4470,13 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     # RESIDENTIAL BAND — the CASONA (protected/dominant, Axlin) sits at the
     # commons/residential boundary; the mandatory functional zones (Joan,
     # round-1 feedback) always exist; extra houses are pool-rolled.
-    casona_xy = (cx, cy + commons_r * 0.85)
+    # casona_xy computed + footprint registered earlier in this function
+    # (see CASONA FOOTPRINT PRE-REGISTRATION above, v18 item 1) — build the
+    # actual structure now, at this function's ORIGINAL call point, so the
+    # rng draw sequence for build_casona()'s own internals stays exactly
+    # where v17 left it.
     build_casona("central", casona_xy, style, rng)
     landmarks["casona"] = casona_xy
-    register_footprint(casona_xy[0], casona_xy[1], 5.5)  # main hall + wing, generous radius
     build_woodpile_axe(casona_xy[0] - 4.2, casona_xy[1] + 0.5, rng, style)  # life signal, item 5
 
     # FLOWER CLUSTERS (v11 item 24, 2026-07-20) — a few small blob clusters
@@ -4216,10 +4489,16 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
         if spot_clear(fx, fy, 0.4, min_gap=0.3):
             build_flower_cluster(fx, fy, rng, style)
 
+    # PER-HOUSE DIMENSION VARIETY (v18 item 4, 2026-07-25): these 3
+    # mandatory-zone huts used to be LITERAL constants — every seed built
+    # the exact same 2.2x2.0 storage hut, the exact same 3.0x2.4 kitchen.
+    # New detail_rng draws (0 existing rng draws at these call sites, so
+    # this is a pure addition — nothing downstream shifts).
     spot = find_clustered_spot(cx, cy, residential_lo, residential_lo * 1.3, gate_ang, cluster_angles, foot_r=1.6)
     if spot:
         x, y, _ = spot
-        house("hut_storage", 2.2, 2.0, 2.3, (x, y), style, stone_base=True, windows=1,
+        house("hut_storage", 2.2 + detail_rng.uniform(-0.15, 0.35), 2.0 + detail_rng.uniform(-0.15, 0.25),
+              2.3 + detail_rng.uniform(-0.15, 0.30), (x, y), style, stone_base=True, windows=1,
               rng=rng, real_door=True, chest=True)
         landmarks["hut_storage"] = (x, y)
 
@@ -4227,7 +4506,8 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
                                 cluster_angles, foot_r=2.0)
     if spot:
         x, y, a = spot
-        house("hut_kitchen", 3.0, 2.4, 2.3, (x, y), style, porch=True, thatch=True, windows=2, rng=rng)
+        house("hut_kitchen", 3.0 + detail_rng.uniform(-0.25, 0.45), 2.4 + detail_rng.uniform(-0.20, 0.35),
+              2.3 + detail_rng.uniform(-0.15, 0.30), (x, y), style, porch=True, thatch=True, windows=2, rng=rng)
         landmarks["hut_kitchen"] = (x, y)
         perp = (-math.sin(a), math.cos(a))
         for bi in range(3):
@@ -4242,7 +4522,8 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     spot = find_flat_spot(cx, cy, ring_r - 3.5, ring_r - 1.8, gate_ang, gate_clear=0.7, foot_r=1.0)
     if spot:
         x, y, _ = spot
-        house("hut_outhouse", 1.3, 1.2, 2.25, (x, y), style, windows=0, rng=rng)
+        house("hut_outhouse", 1.3 + detail_rng.uniform(-0.08, 0.15), 1.2 + detail_rng.uniform(-0.08, 0.12),
+              2.25 + detail_rng.uniform(-0.10, 0.15), (x, y), style, windows=0, rng=rng)
         landmarks["hut_outhouse"] = (x, y)
 
     # CEMETERY (PO live addendum, 2026-07-20) — a fenced-off corner near the
@@ -4323,11 +4604,29 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
     # either end gets clipped to this circle so the ribbon terminates at
     # the plaza's paving edge instead of overlapping on top of it.
     PLAZA_CLIP_R = 2.4
+    # PLAZA RING (v18 item 2, 2026-07-25): a literal walking circle around
+    # the campfire (build_plaza_ring, called near build_ground_patch below)
+    # sitting between the fire-stone cluster (r~1.05+stone radius) and the
+    # paved plaza edge. Every hub_chain segment touching "plaza" now aims
+    # at this ring instead of the plaza's raw center (see _plaza_ring_point)
+    # — it joins the circle at the point closest to its own approach angle,
+    # so the path's centerline never needs to cross the fire at all.
+    # FIRE_EXCLUDE_R is a tight safety-net clip (the old PLAZA_CLIP_R clip
+    # was generously sized to the whole paved disc, which let a wobbly
+    # desire-path curve dip back toward the center between its endpoints —
+    # this tighter radius is what actually keeps a path off the fire).
+    PLAZA_RING_R = 1.9
+    FIRE_EXCLUDE_R = 1.5
     hub_chain = [k for k in ("gate", "plaza", "casona", "well") if k in landmarks]
     for i in range(len(hub_chain) - 1):
         src, dest = hub_chain[i], hub_chain[i + 1]
-        clip = (plaza_x, plaza_y, PLAZA_CLIP_R) if "plaza" in (src, dest) else None
-        _, poly = build_path(landmarks[src], landmarks[dest], 1.4, rng,
+        p1, p2 = landmarks[src], landmarks[dest]
+        if src == "plaza":
+            p1 = _plaza_ring_point(landmarks[dest], (plaza_x, plaza_y), PLAZA_RING_R)
+        if dest == "plaza":
+            p2 = _plaza_ring_point(landmarks[src], (plaza_x, plaza_y), PLAZA_RING_R)
+        clip = (plaza_x, plaza_y, FIRE_EXCLUDE_R) if "plaza" in (src, dest) else None
+        _, poly = build_path(p1, p2, 1.4, rng,
                               wear=TRAFFIC_WEIGHT.get(dest, 0.6), clip_circle=clip)
         path_polylines.append(poly)
     hub = landmarks.get("casona", landmarks["plaza"])
@@ -4348,6 +4647,11 @@ def build_interior(cx, cy, ring_r, gate_ang, style, threat):
             break
     # Trampled dirt plaza around the hearth.
     build_ground_patch(plaza_x, plaza_y, PLAZA_CLIP_R, rng, tone=DIRT_PATH_WORN, surface="cobblestone")
+    # Circular worn-path ring around the fire (v18 item 2) — sits a hair
+    # above the cobblestone disc, between the fire-stone cluster and the
+    # paved edge. Built AFTER the spokes above (their path_polylines are
+    # collected regardless) so nothing depends on ordering here.
+    build_plaza_ring(plaza_x, plaza_y, PLAZA_RING_R, 0.9, rng)
 
     # VEGETATION RECLAIM (v15, poe_visual_bar) — grass/flowers at building
     # bases, plaza margins, path shoulders. MUST run after PLACED_FOOTPRINTS
