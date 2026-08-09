@@ -501,37 +501,34 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     #
     # So the bite is shallower now, and a stone that lands unsupported is slid
     # toward the centroid of what it touches until it is.
+    # A slide-toward-contacts retry lived here for exactly one build and is gone.
+    # It pulled under-supported stones toward the centroid of what they touched,
+    # which aligns them into the SAME plan column, so each one then settled on top
+    # of the last: the formations came out as thin vertical chimneys metres tall
+    # and one stone wide. Physically absurd, and visible instantly in the
+    # eye-height render -- which was not opened before that build was committed.
+    #
+    # Two things are kept from that pass because both are true and useful:
+    # the shallower bite, and the support count. What is NOT kept is a fix that
+    # cannot work: adding contacts is a placement problem, not a nudge.
     bite = spec.get("settle_bite", 0.86)        # 0.86 => ~14% burial at contact
     for i, b in enumerate(blanks):
-        for _attempt in range(4):
-            z = b["hz"] * 0.72                  # resting on the ground
-            contacts = []
-            for p in blanks[:i]:
-                reach_h = bite * (b["hr"] + p["hr"])
-                reach_v = bite * (b["hz"] + p["hz"])
-                d = math.hypot(b["x"] - p["x"], b["y"] - p["y"])
-                if d < reach_h:
-                    drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
-                    cz = p["z"] + drop
-                    contacts.append((cz, p))
-                    z = max(z, cz)
-            if not contacts:
-                break                            # on the ground: fully supported
-            # Only the stones it actually TOUCHES hold it up; anything lower is
-            # not in contact and carries no load.
-            tol = b["hz"] * 0.25
-            bearing = [p for cz, p in contacts if cz >= z - tol]
-            if len(bearing) >= 3:
-                break
-            # Under-supported. Slide toward the centroid of what it does touch --
-            # which is what a stone rolling into a gap actually does -- and try
-            # to settle again.
-            cx = sum(p["x"] for p in bearing) / len(bearing)
-            cy = sum(p["y"] for p in bearing) / len(bearing)
-            b["x"] += (cx - b["x"]) * 0.45
-            b["y"] += (cy - b["y"]) * 0.45
+        z = b["hz"] * 0.72                      # resting on the ground
+        contacts = []
+        for p in blanks[:i]:
+            reach_h = bite * (b["hr"] + p["hr"])
+            reach_v = bite * (b["hz"] + p["hz"])
+            d = math.hypot(b["x"] - p["x"], b["y"] - p["y"])
+            if d < reach_h:
+                drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
+                cz = p["z"] + drop
+                contacts.append(cz)
+                z = max(z, cz)
         b["z"] = z
-        b["bearing"] = len(bearing) if contacts else 0
+        # Only the stones it actually TOUCHES carry load; anything lower is not in
+        # contact. Reported, not acted on: see the note above.
+        tol = b["hz"] * 0.25
+        b["bearing"] = sum(1 for cz in contacts if cz >= z - tol)
 
     # Height is an OUTCOME of the packing, so the formation is rescaled to honour
     # the spec — but UNIFORMLY, positions and stone geometry together. Scaling Z
