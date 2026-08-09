@@ -38,39 +38,48 @@ scene = bpy.context.scene
 STONE_WARM = (0.130, 0.115, 0.088)   # displays ~ (0.40, 0.38, 0.33)
 STONE_COOL = (0.085, 0.095, 0.118)   # displays ~ (0.33, 0.35, 0.38)
 STONE_DARK = (0.048, 0.050, 0.044)   # displays ~ (0.25, 0.26, 0.24)
-MOSS = (0.022, 0.055, 0.014)         # displays ~ (0.17, 0.26, 0.13)
+MOSS = (0.020, 0.041, 0.017)         # displays ~ (0.17, 0.26, 0.13)
 
+# Proportions rebuilt against Joan's IN-GAME Path of Exile screenshot rather than
+# the concept-art sheets. The game rock is LOW and WIDE and emerges from the
+# ground; the concept art is what led to tall compact masses sitting on top of it.
+# Rebuilt as AGGREGATES after counting the reference sheet: every formation in
+# rock_poe_mossy_stacked_set.png is 15-40 small stones packed into a silhouette,
+# never one faceted mass. Sizes are metres against a 1.80 m player.
 VARIANTS = [
-    dict(key="stacked_mossy", label="Stacked / mossy",
-         radius=0.45, blocks=5, cuts=22, bedding=2, stack=0.80, taper=0.45,
-         color_rock=STONE_WARM, color_moss=MOSS, moss_min_z=0.72, moss_chance=0.7,
-         crevice_dark=0.78),
-    dict(key="column", label="Column",
-         radius=0.34, blocks=2, cuts=20, bedding=4, flatten=2.2, stack=0.90,
-         color_rock=STONE_COOL, color_moss=MOSS, moss_min_z=0.80, moss_chance=0.30,
-         crevice_dark=0.72),
-    dict(key="wedge_slab", label="Wedge slab",
-         radius=0.70, blocks=2, cuts=18, bedding=1, flatten=0.40, elongate=1.6,
-         stack=0.10,
-         color_rock=STONE_COOL, color_moss=None, crevice_dark=0.62),
-    dict(key="strata_outcrop", label="Strata outcrop",
-         radius=0.55, blocks=3, cuts=16, bedding=6, bedding_jitter=0.05, flatten=0.90,
-         stack=0.45, taper=0.30,
-         color_rock=STONE_WARM, color_moss=MOSS, moss_min_z=0.76, moss_chance=0.55,
-         crevice_dark=0.80),
-    dict(key="boulder", label="Boulder",
-         radius=0.60, blocks=1, cuts=26,
-         color_rock=STONE_DARK, color_moss=MOSS, moss_min_z=0.78, moss_chance=0.45,
-         crevice_dark=0.70),
+    dict(key="mound_mossy", label="Mossy mound",
+         radius=0.72, height=0.95, profile="dome", stones=48, outliers=7,
+         stone_frac=0.25, cuts=7,
+         color_rock=STONE_WARM, color_moss=MOSS, moss_top_frac=0.50, moss_chance=0.75,
+         crevice_dark=0.55),
+    dict(key="peak", label="Peak",
+         radius=0.68, height=1.65, profile="peak", stones=56, outliers=8,
+         stone_frac=0.24, cuts=7,
+         color_rock=STONE_WARM, color_moss=MOSS, moss_top_frac=0.62, moss_chance=0.55,
+         crevice_dark=0.60),
+    dict(key="ridge_low", label="Low ridge",
+         radius=0.58, height=0.58, profile="ridge", stones=42, outliers=8,
+         stone_frac=0.26, elongate=2.2, cuts=7,
+         color_rock=STONE_COOL, color_moss=MOSS, moss_top_frac=0.55, moss_chance=0.45,
+         crevice_dark=0.50),
+    dict(key="split", label="Split shoulders",
+         radius=0.72, height=1.20, profile="split", stones=46, outliers=6,
+         stone_frac=0.24, cuts=7,
+         color_rock=STONE_COOL, color_moss=None, crevice_dark=0.55),
+    dict(key="cluster_small", label="Small cluster",
+         radius=0.40, height=0.42, profile="dome", stones=22, outliers=5,
+         stone_frac=0.26, cuts=6,
+         color_rock=STONE_DARK, color_moss=MOSS, moss_top_frac=0.55, moss_chance=0.5,
+         crevice_dark=0.45),
 ]
 
-SPACING = 2.2
+SPACING = 3.4
 objs = []
 for i, spec in enumerate(VARIANTS):
     rng = random.Random(SEED + i * 17)
     bm = bmesh.new()
     vcol = {}
-    faces = biome_facet.add_faceted_rock(bm, vcol, Vector((0.0, 0.0, 0.0)), spec, rng)
+    faces = biome_facet.add_stone_aggregate(bm, vcol, Vector((0.0, 0.0, 0.0)), spec, rng)
     biome_facet.flat_shade(faces)
     obj = biome_vcol.finalize_vcol_mesh(
         f"rock_{spec['key']}", bm, vcol,
@@ -78,6 +87,10 @@ for i, spec in enumerate(VARIANTS):
         mesh_name=f"rock_{spec['key']}_mesh",
         flat=True,
     )
+    # Sink the base into the ground. In the reference the stone EMERGES from the
+    # sand -- there is no visible contact line anywhere. A rock resting exactly on
+    # a plane reads as a prop dropped on the level, which is what the previous
+    # render looked like.
     obj.location = (i * SPACING, 0.0, 0.0)
     objs.append(obj)
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
@@ -155,7 +168,7 @@ def render_to(path, loc, target, lens=40, res=(1800, 900)):
 
 
 mid_x = (len(VARIANTS) - 1) * SPACING * 0.5
-render_to("facet_hero.png", (mid_x, -7.5, 3.0), (mid_x, 0.0, 0.5))
-render_to("facet_playereye.png", (mid_x - 1.2, -6.4, 1.65), (mid_x, 0.3, 0.45), lens=35)
-render_to("facet_closeup.png", (0.7, -2.4, 1.05), (0.0, 0.0, 0.42), lens=55, res=(1400, 1000))
+render_to("facet_hero.png", (mid_x, -11.0, 3.4), (mid_x, 0.0, 0.6))
+render_to("facet_playereye.png", (mid_x - 1.5, -9.0, 1.65), (mid_x, 0.3, 0.55), lens=35)
+render_to("facet_closeup.png", (1.0, -3.0, 1.15), (0.0, 0.0, 0.50), lens=55, res=(1400, 1000))
 print("[facet] DONE")
