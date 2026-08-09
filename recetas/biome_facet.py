@@ -128,6 +128,14 @@ def _convex_chunk(rng, radius, cuts, bedding, bedding_jitter, elongate, flatten,
         for v in tmp.verts:
             v.co *= k
 
+    # bisect_plane + holes_fill do NOT guarantee consistent winding, and every
+    # consumer downstream assumes outward normals: the convex inside-test in
+    # cull_interior_faces, the hemisphere orientation in the AO bake, and flat
+    # shading itself. An inward-facing face silently breaks all three -- the
+    # interior cull removed 1% instead of the expected ~20% until this line.
+    bmesh.ops.recalc_face_normals(tmp, faces=tmp.faces[:])
+    tmp.normal_update()
+
     # Erosion runs AFTER normalisation (so its amplitude is a true fraction of
     # the block radius) and BEFORE the shape scaling (so a flattened slab gets
     # its pitting flattened with it, like real bedded stone).
@@ -295,6 +303,50 @@ def add_faceted_rock(bm, vcol, center, spec, rng):
     return made_faces
 
 
+def cull_interior_faces(bm, solids, margin=1e-4):
+    """Delete faces buried inside another stone, then drop the orphaned verts.
+
+    Joan, 2026-08-08: *"quizas un monticulo de estas piedras podria estar
+    fusionada la malla para no tener 300000 poligonos en 1 metro de piso"*.
+
+    An aggregate is already ONE mesh and one draw call, so that half is fine. The
+    waste is elsewhere and real: every stone is a CLOSED polyhedron and they
+    interpenetrate by 40% by design, so a large share of the triangles sit inside
+    the mass where nothing can ever see them. They still cost memory, vertex
+    processing and AO rays.
+
+    A boolean union would also remove them, but it is slow, fragile on
+    coincident planes, and rebuilds topology. It is not needed here: every stone
+    is CONVEX, so "is this point inside stone j" is an exact test against j's own
+    face planes -- which we already have. Sphere-reject first keeps it cheap.
+
+    `solids` is a list of (centre, radius, planes) where planes is a list of
+    (normal, d) with the convention `normal . p <= d` for points inside.
+    Returns (faces_before, faces_after).
+    """
+    before = len(bm.faces)
+    doomed = []
+    for f in bm.faces:
+        c = f.calc_center_median()
+        for centre, radius, planes in solids:
+            if (c - centre).length_squared > radius * radius:
+                continue                      # cheap sphere reject
+            inside = True
+            for n, d in planes:
+                if n.dot(c) > d - margin:
+                    inside = False
+                    break
+            if inside:
+                doomed.append(f)
+                break
+    if doomed:
+        bmesh.ops.delete(bm, geom=doomed, context='FACES')
+        loose = [v for v in bm.verts if not v.link_faces]
+        if loose:
+            bmesh.ops.delete(bm, geom=loose, context='VERTS')
+    return before, len(bm.faces)
+
+
 def _envelope_radius(t, profile):
     """Half-width of the formation at height fraction t (0 base, 1 crown)."""
     if profile == "peak":
@@ -355,6 +407,7 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
 
     origin = Vector(center)
     made_faces = []
+    solids = []
 
     def place_stone(pos, stone_r, height_t, allow_moss, elong_s, flat_s):
         coords, faces = _convex_chunk(
@@ -363,6 +416,7 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
             elongate=elong_s, flatten=flat_s,
         )
         verts = [bm.verts.new(pos + c) for c in coords]
+        mine = []
         for idx in faces:
             try:
                 f = bm.faces.new([verts[k] for k in idx])
@@ -370,6 +424,14 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
                 continue
             f.normal_update()
             made_faces.append(f)
+            mine.append(f)
+        # Record this stone as a convex solid: its own face planes, plus a
+        # bounding sphere for cheap rejection. cull_interior_faces uses these to
+        # delete the geometry that ends up buried inside it.
+        if mine:
+            planes = [(f.normal.copy(), f.normal.dot(f.verts[0].co)) for f in mine]
+            reach = max((v.co - pos).length for v in verts)
+            solids.append((pos.copy(), reach, planes))
         # ONE colour per stone. Per-stone tint drift is what gives the reference
         # sheets their liveliness -- neighbouring stones differ in value, and
         # that reads as surface without a single texel.
@@ -454,7 +516,11 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
         ))
         place_stone(pos, out_r, 0.0, False, rng.uniform(0.85, 1.25), out_flat)
 
-    return made_faces
+    stats = (len(bm.faces), len(bm.faces))
+    if spec.get("cull_interior", True):
+        stats = cull_interior_faces(bm, solids)
+        made_faces = [f for f in made_faces if f.is_valid]
+    return made_faces, stats
 
 
 def flat_shade(faces):

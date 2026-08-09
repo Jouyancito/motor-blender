@@ -81,7 +81,7 @@ for i, spec in enumerate(VARIANTS):
     rng = random.Random(SEED + i * 17)
     bm = bmesh.new()
     vcol = {}
-    faces = biome_facet.add_stone_aggregate(bm, vcol, Vector((0.0, 0.0, 0.0)), spec, rng)
+    faces, cull = biome_facet.add_stone_aggregate(bm, vcol, Vector((0.0, 0.0, 0.0)), spec, rng)
     biome_facet.flat_shade(faces)
     # AO is baked on the FINISHED formation: the darkness we are after lives
     # between neighbouring stones, so it cannot be computed per stone.
@@ -105,7 +105,7 @@ for i, spec in enumerate(VARIANTS):
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     print(f"[facet] {spec['key']:16s} verts={len(obj.data.vertices):4d} tris={tris:4d} "
           f"height={obj.dimensions.z:.2f}m width={obj.dimensions.x:.2f}m "
-          f"ao_mean={ao_mean:.2f} ao_min={ao_min:.2f}")
+          f"ao={ao_mean:.2f} faces {cull[0]}->{cull[1]} (-{100.0*(cull[0]-cull[1])/max(cull[0],1):.0f}%)")
 
 mat = biome_vcol.vcol_material("mat_rock_facet", roughness=0.85, specular=0.15)
 for obj in objs:
