@@ -409,12 +409,27 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     made_faces = []
     solids = []
 
-    def place_stone(pos, stone_r, height_t, allow_moss, elong_s, flat_s):
+    def carve(stone_r):
+        """Build one stone and MEASURE it. Returns (coords, faces, hr, hz).
+
+        Measuring is the whole point. _convex_chunk normalises a stone so its
+        maximum extent equals `stone_r` in ONE direction and is smaller in every
+        other, so `stone_r` is an upper bound, not a size. Three separate fixes
+        for floating stones failed because they all used it as a size, and the
+        interior-face cull then removed 1% instead of ~20% for the same reason:
+        stones set at sphere-contact distance for radii they do not have never
+        touch, so there is nothing buried and nothing holding them up.
+        """
         coords, faces = _convex_chunk(
             rng, stone_r, cuts=cuts, bedding=spec.get("bedding", 0),
             bedding_jitter=spec.get("bedding_jitter", 0.10),
-            elongate=elong_s, flatten=flat_s,
+            elongate=rng.uniform(0.85, 1.25), flatten=rng.uniform(0.72, 1.10),
         )
+        hz = max((abs(c.z) for c in coords), default=stone_r)
+        hr = max((math.hypot(c.x, c.y) for c in coords), default=stone_r)
+        return coords, faces, hr, hz
+
+    def emit_stone(coords, faces, pos, height_t, allow_moss):
         verts = [bm.verts.new(pos + c) for c in coords]
         mine = []
         for idx in faces:
@@ -456,65 +471,58 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     # stones read as one mass when their centres sit at ADJACENCY x the sum of
     # their radii. Given the horizontal gap, that fixes the vertical drop exactly,
     # so stones interlock instead of leaving the gaps the loose version had.
-    seats = []          # (centre, radius, elongate, flatten)
+    blanks = []
     for _i in range(n):
         t = rng.random() ** 1.45
         env = _envelope_radius(t, profile)
         ang = rng.uniform(0.0, math.tau)
         rad = R * env * math.sqrt(rng.random())
         stone_r = R * stone_frac * (1.0 - 0.40 * t) * rng.uniform(0.78, 1.25)
-        # The stone's own squash is drawn HERE, not inside place_stone, because
-        # the settle has to know it. The first version modelled every stone as a
-        # sphere of its nominal radius while building them flattened by 0.72-1.10,
-        # so a stone could come to rest with up to 28% of its radius of air
-        # beneath it. Floating stones survived two "fixes" because of it.
-        elong_s = rng.uniform(0.85, 1.25)
-        flat_s = rng.uniform(0.72, 1.10)
-        x = math.cos(ang) * rad * elongate
-        y = math.sin(ang) * rad
-        z = stone_r * flat_s * 0.55       # on the ground, part-buried
-        for pc, pr, _pe, pf in seats:
-            # Anisotropic contact: horizontal reach uses the nominal radii, the
-            # vertical drop uses the SQUASHED ones. Ellipsoid contact, which is
-            # what these stones actually are.
-            reach_h = ADJACENCY * (stone_r * max(elong_s, 1.0) + pr * max(_pe, 1.0))
-            reach_v = ADJACENCY * (stone_r * flat_s + pr * pf)
-            d = math.hypot(x - pc.x, y - pc.y)
+        coords, faces, hr, hz = carve(stone_r)
+        blanks.append(dict(coords=coords, faces=faces,
+                           x=math.cos(ang) * rad * elongate,
+                           y=math.sin(ang) * rad, hr=hr, hz=hz, z=0.0))
+
+    # Contact now uses the stone's OWN measured half-extents, so ADJACENCY finally
+    # means what it says: centres at 0.60 x the sum of real extents is a 40%
+    # interpenetration. Stones lock together instead of hovering near each other,
+    # which is what makes the pile hold AND what gives the interior-face cull
+    # something to remove.
+    for i, b in enumerate(blanks):
+        z = b["hz"] * 0.55                      # on the ground, part-buried
+        for p in blanks[:i]:
+            reach_h = ADJACENCY * (b["hr"] + p["hr"])
+            reach_v = ADJACENCY * (b["hz"] + p["hz"])
+            d = math.hypot(b["x"] - p["x"], b["y"] - p["y"])
             if d < reach_h:
                 drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
-                z = max(z, pc.z + drop)
-        seats.append((Vector((x, y, z)), stone_r, elong_s, flat_s))
+                z = max(z, p["z"] + drop)
+        b["z"] = z
 
     # Height is an OUTCOME of the packing, so the formation is rescaled to honour
-    # the spec — but UNIFORMLY, positions and stone radii together.
-    #
-    # Scaling Z alone was a bug with teeth: the settle above guarantees every
-    # stone touches its supporter, and stretching only the vertical axis pulls
-    # each stone off the one holding it up. Floating stones came back on the very
-    # pass that was meant to have fixed them. A uniform scale preserves every
-    # distance ratio, so contact survives by construction.
-    top = max((c.z + r * f for c, r, _e, f in seats), default=1.0)
+    # the spec — but UNIFORMLY, positions and stone geometry together. Scaling Z
+    # alone would pull every settled stone off its supporter.
+    top = max((b["z"] + b["hz"] for b in blanks), default=1.0)
     k = min(1.6, max(0.6, H / max(top, 1e-6)))
 
-    for c, stone_r, elong_s, flat_s in seats:
-        pos = origin + c * k
+    for b in blanks:
+        pos = origin + Vector((b["x"], b["y"], b["z"])) * k
         # Moss follows where the stone ENDED UP, not where it was drawn.
-        place_stone(pos, stone_r * k, min(1.0, (c.z * k) / max(H, 1e-6)),
-                    True, elong_s, flat_s)
+        emit_stone([c * k for c in b["coords"]], b["faces"], pos,
+                   min(1.0, (b["z"] * k) / max(H, 1e-6)), True)
 
     for _i in range(outliers):
         # Loose stones at the foot. In the references these are what stop the
         # formation from having a hard contact line with the ground.
         ang = rng.uniform(0.0, math.tau)
         rad = R * rng.uniform(1.0, 1.55)
-        out_r = R * stone_frac * rng.uniform(0.35, 0.70)
-        out_flat = rng.uniform(0.72, 1.10)
+        coords, faces, _hr, hz = carve(R * stone_frac * rng.uniform(0.35, 0.70))
         pos = origin + Vector((
             math.cos(ang) * rad * elongate,
             math.sin(ang) * rad,
-            out_r * out_flat * rng.uniform(0.15, 0.55),
+            hz * rng.uniform(0.15, 0.55),      # measured, so it sits half-buried
         ))
-        place_stone(pos, out_r, 0.0, False, rng.uniform(0.85, 1.25), out_flat)
+        emit_stone(coords, faces, pos, 0.0, False)
 
     stats = (len(bm.faces), len(bm.faces))
     if spec.get("cull_interior", True):
