@@ -356,11 +356,11 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     origin = Vector(center)
     made_faces = []
 
-    def place_stone(pos, stone_r, height_t, allow_moss):
+    def place_stone(pos, stone_r, height_t, allow_moss, elong_s, flat_s):
         coords, faces = _convex_chunk(
             rng, stone_r, cuts=cuts, bedding=spec.get("bedding", 0),
             bedding_jitter=spec.get("bedding_jitter", 0.10),
-            elongate=rng.uniform(0.85, 1.25), flatten=rng.uniform(0.72, 1.10),
+            elongate=elong_s, flatten=flat_s,
         )
         verts = [bm.verts.new(pos + c) for c in coords]
         for idx in faces:
@@ -394,22 +394,34 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     # stones read as one mass when their centres sit at ADJACENCY x the sum of
     # their radii. Given the horizontal gap, that fixes the vertical drop exactly,
     # so stones interlock instead of leaving the gaps the loose version had.
-    seats = []          # (Vector centre, radius, height_fraction)
+    seats = []          # (centre, radius, elongate, flatten)
     for _i in range(n):
         t = rng.random() ** 1.45
         env = _envelope_radius(t, profile)
         ang = rng.uniform(0.0, math.tau)
         rad = R * env * math.sqrt(rng.random())
         stone_r = R * stone_frac * (1.0 - 0.40 * t) * rng.uniform(0.78, 1.25)
+        # The stone's own squash is drawn HERE, not inside place_stone, because
+        # the settle has to know it. The first version modelled every stone as a
+        # sphere of its nominal radius while building them flattened by 0.72-1.10,
+        # so a stone could come to rest with up to 28% of its radius of air
+        # beneath it. Floating stones survived two "fixes" because of it.
+        elong_s = rng.uniform(0.85, 1.25)
+        flat_s = rng.uniform(0.72, 1.10)
         x = math.cos(ang) * rad * elongate
         y = math.sin(ang) * rad
-        z = stone_r * 0.55          # resting on the ground, part-buried
-        for pc, pr, _pt in seats:
-            reach = ADJACENCY * (stone_r + pr)
+        z = stone_r * flat_s * 0.55       # on the ground, part-buried
+        for pc, pr, _pe, pf in seats:
+            # Anisotropic contact: horizontal reach uses the nominal radii, the
+            # vertical drop uses the SQUASHED ones. Ellipsoid contact, which is
+            # what these stones actually are.
+            reach_h = ADJACENCY * (stone_r * max(elong_s, 1.0) + pr * max(_pe, 1.0))
+            reach_v = ADJACENCY * (stone_r * flat_s + pr * pf)
             d = math.hypot(x - pc.x, y - pc.y)
-            if d < reach:
-                z = max(z, pc.z + math.sqrt(reach * reach - d * d))
-        seats.append((Vector((x, y, z)), stone_r, t))
+            if d < reach_h:
+                drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
+                z = max(z, pc.z + drop)
+        seats.append((Vector((x, y, z)), stone_r, elong_s, flat_s))
 
     # Height is an OUTCOME of the packing, so the formation is rescaled to honour
     # the spec — but UNIFORMLY, positions and stone radii together.
@@ -419,27 +431,28 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
     # each stone off the one holding it up. Floating stones came back on the very
     # pass that was meant to have fixed them. A uniform scale preserves every
     # distance ratio, so contact survives by construction.
-    top = max((c.z + r for c, r, _t in seats), default=1.0)
+    top = max((c.z + r * f for c, r, _e, f in seats), default=1.0)
     k = min(1.6, max(0.6, H / max(top, 1e-6)))
 
-    for c, stone_r, _t in seats:
+    for c, stone_r, elong_s, flat_s in seats:
         pos = origin + c * k
         # Moss follows where the stone ENDED UP, not where it was drawn.
         place_stone(pos, stone_r * k, min(1.0, (c.z * k) / max(H, 1e-6)),
-                    allow_moss=True)
+                    True, elong_s, flat_s)
 
     for _i in range(outliers):
         # Loose stones at the foot. In the references these are what stop the
         # formation from having a hard contact line with the ground.
         ang = rng.uniform(0.0, math.tau)
         rad = R * rng.uniform(1.0, 1.55)
+        out_r = R * stone_frac * rng.uniform(0.35, 0.70)
+        out_flat = rng.uniform(0.72, 1.10)
         pos = origin + Vector((
             math.cos(ang) * rad * elongate,
             math.sin(ang) * rad,
-            R * stone_frac * rng.uniform(-0.25, 0.10),
+            out_r * out_flat * rng.uniform(0.15, 0.55),
         ))
-        place_stone(pos, R * stone_frac * rng.uniform(0.35, 0.70), 0.0,
-                    allow_moss=False)
+        place_stone(pos, out_r, 0.0, False, rng.uniform(0.85, 1.25), out_flat)
 
     return made_faces
 

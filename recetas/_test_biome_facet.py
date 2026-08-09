@@ -18,10 +18,12 @@ from mathutils import Vector
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import biome_ao  # noqa: E402
 import biome_facet  # noqa: E402
 import biome_vcol  # noqa: E402
 
 REN_DIR = os.path.join(HERE, "renders_facet")
+SUFFIX = "_noao" if os.environ.get("FACET_NO_AO") == "1" else ""
 os.makedirs(REN_DIR, exist_ok=True)
 
 SEED = 20260808
@@ -81,6 +83,13 @@ for i, spec in enumerate(VARIANTS):
     vcol = {}
     faces = biome_facet.add_stone_aggregate(bm, vcol, Vector((0.0, 0.0, 0.0)), spec, rng)
     biome_facet.flat_shade(faces)
+    # AO is baked on the FINISHED formation: the darkness we are after lives
+    # between neighbouring stones, so it cannot be computed per stone.
+    if os.environ.get("FACET_NO_AO") == "1":
+        ao_mean, ao_min = 1.0, 1.0
+    else:
+        ao_mean, ao_min = biome_ao.bake_vertex_ao(
+            bm, vcol, samples=20, max_dist=spec["radius"] * 0.55, strength=0.85)
     obj = biome_vcol.finalize_vcol_mesh(
         f"rock_{spec['key']}", bm, vcol,
         scene=scene,
@@ -95,7 +104,8 @@ for i, spec in enumerate(VARIANTS):
     objs.append(obj)
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     print(f"[facet] {spec['key']:16s} verts={len(obj.data.vertices):4d} tris={tris:4d} "
-          f"height={obj.dimensions.z:.2f}m width={obj.dimensions.x:.2f}m")
+          f"height={obj.dimensions.z:.2f}m width={obj.dimensions.x:.2f}m "
+          f"ao_mean={ao_mean:.2f} ao_min={ao_min:.2f}")
 
 mat = biome_vcol.vcol_material("mat_rock_facet", roughness=0.85, specular=0.15)
 for obj in objs:
@@ -168,7 +178,7 @@ def render_to(path, loc, target, lens=40, res=(1800, 900)):
 
 
 mid_x = (len(VARIANTS) - 1) * SPACING * 0.5
-render_to("facet_hero.png", (mid_x, -11.0, 3.4), (mid_x, 0.0, 0.6))
-render_to("facet_playereye.png", (mid_x - 1.5, -9.0, 1.65), (mid_x, 0.3, 0.55), lens=35)
-render_to("facet_closeup.png", (1.0, -3.0, 1.15), (0.0, 0.0, 0.50), lens=55, res=(1400, 1000))
+render_to(f"facet_hero{SUFFIX}.png", (mid_x, -11.0, 3.4), (mid_x, 0.0, 0.6))
+render_to(f"facet_playereye{SUFFIX}.png", (mid_x - 1.5, -9.0, 1.65), (mid_x, 0.3, 0.55), lens=35)
+render_to(f"facet_closeup{SUFFIX}.png", (1.0, -3.0, 1.15), (0.0, 0.0, 0.50), lens=55, res=(1400, 1000))
 print("[facet] DONE")
