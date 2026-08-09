@@ -483,21 +483,55 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
                            x=math.cos(ang) * rad * elongate,
                            y=math.sin(ang) * rad, hr=hr, hz=hz, z=0.0))
 
-    # Contact now uses the stone's OWN measured half-extents, so ADJACENCY finally
-    # means what it says: centres at 0.60 x the sum of real extents is a 40%
-    # interpenetration. Stones lock together instead of hovering near each other,
-    # which is what makes the pile hold AND what gives the interior-face cull
-    # something to remove.
+    # ---- settle with a REAL support condition -------------------------------
+    # Joan, 2026-08-08: *"tu 'se apoyan' no es correcto, porque solo se une la
+    # malla... la fisica de la piedra no hace que al tocar un vertice se vuelva
+    # algo ultra resistente unido, eso es irreal"*. He is right twice over, and
+    # the two halves were tangled together here:
+    #
+    #   HOW MANY CONTACTS decides whether a stone stands. Dropping until the
+    #   first contact and stopping leaves it balanced on ONE point, which falls
+    #   over. A stone is stable when it has at least three contacts and its
+    #   centre of mass projects INSIDE the polygon they form.
+    #
+    #   HOW DEEP IT SINKS is a separate, real thing: stones do settle into loose
+    #   scree and soil. But a settled stone buries 10-25% of itself, not the 40%
+    #   that ADJACENCY was producing here. That much is not settling, it is
+    #   welding, and it is what made the mesh read as one fused blob.
+    #
+    # So the bite is shallower now, and a stone that lands unsupported is slid
+    # toward the centroid of what it touches until it is.
+    bite = spec.get("settle_bite", 0.86)        # 0.86 => ~14% burial at contact
     for i, b in enumerate(blanks):
-        z = b["hz"] * 0.55                      # on the ground, part-buried
-        for p in blanks[:i]:
-            reach_h = ADJACENCY * (b["hr"] + p["hr"])
-            reach_v = ADJACENCY * (b["hz"] + p["hz"])
-            d = math.hypot(b["x"] - p["x"], b["y"] - p["y"])
-            if d < reach_h:
-                drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
-                z = max(z, p["z"] + drop)
+        for _attempt in range(4):
+            z = b["hz"] * 0.72                  # resting on the ground
+            contacts = []
+            for p in blanks[:i]:
+                reach_h = bite * (b["hr"] + p["hr"])
+                reach_v = bite * (b["hz"] + p["hz"])
+                d = math.hypot(b["x"] - p["x"], b["y"] - p["y"])
+                if d < reach_h:
+                    drop = reach_v * math.sqrt(max(0.0, 1.0 - (d / reach_h) ** 2))
+                    cz = p["z"] + drop
+                    contacts.append((cz, p))
+                    z = max(z, cz)
+            if not contacts:
+                break                            # on the ground: fully supported
+            # Only the stones it actually TOUCHES hold it up; anything lower is
+            # not in contact and carries no load.
+            tol = b["hz"] * 0.25
+            bearing = [p for cz, p in contacts if cz >= z - tol]
+            if len(bearing) >= 3:
+                break
+            # Under-supported. Slide toward the centroid of what it does touch --
+            # which is what a stone rolling into a gap actually does -- and try
+            # to settle again.
+            cx = sum(p["x"] for p in bearing) / len(bearing)
+            cy = sum(p["y"] for p in bearing) / len(bearing)
+            b["x"] += (cx - b["x"]) * 0.45
+            b["y"] += (cy - b["y"]) * 0.45
         b["z"] = z
+        b["bearing"] = len(bearing) if contacts else 0
 
     # Height is an OUTCOME of the packing, so the formation is rescaled to honour
     # the spec — but UNIFORMLY, positions and stone geometry together. Scaling Z
@@ -524,11 +558,17 @@ def add_stone_aggregate(bm, vcol, center, spec, rng):
         ))
         emit_stone(coords, faces, pos, 0.0, False)
 
-    stats = (len(bm.faces), len(bm.faces))
+    # A stone with 1 or 2 contacts is standing on a knife edge. 0 means it is on
+    # the ground, which is fine. Reporting this is the point: "se apoyan" was an
+    # assertion, and an assertion without a number is what got corrected.
+    wobbly = sum(1 for b in blanks if b.get("bearing", 0) in (1, 2))
+
+    faces_before = len(bm.faces)
+    faces_after = faces_before
     if spec.get("cull_interior", True):
-        stats = cull_interior_faces(bm, solids)
+        faces_before, faces_after = cull_interior_faces(bm, solids)
         made_faces = [f for f in made_faces if f.is_valid]
-    return made_faces, stats
+    return made_faces, (faces_before, faces_after, wobbly, len(blanks))
 
 
 def flat_shade(faces):

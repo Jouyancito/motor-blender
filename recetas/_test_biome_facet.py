@@ -105,7 +105,8 @@ for i, spec in enumerate(VARIANTS):
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     print(f"[facet] {spec['key']:16s} verts={len(obj.data.vertices):4d} tris={tris:4d} "
           f"height={obj.dimensions.z:.2f}m width={obj.dimensions.x:.2f}m "
-          f"ao={ao_mean:.2f} faces {cull[0]}->{cull[1]} (-{100.0*(cull[0]-cull[1])/max(cull[0],1):.0f}%)")
+          f"ao={ao_mean:.2f} cull -{100.0*(cull[0]-cull[1])/max(cull[0],1):.0f}% "
+          f"mal-apoyadas={cull[2]}/{cull[3]}")
 
 mat = biome_vcol.vcol_material("mat_rock_facet", roughness=0.85, specular=0.15)
 for obj in objs:
