@@ -684,8 +684,17 @@ def _load_tex_image(path, non_color=False):
 
 _tex_mats = {}
 def mat_textured(key, slug, scale=2.0, projection='top', fallback_color=(0.45, 0.40, 0.32), rough_mult=1.0, tint=None):
-    """Real image-texture Principled BSDF material (PolyHaven CC0 photo
-    textures) — Geometry(Position, WORLD-space — same choice mood_valheim.py
+    """Image-texture Principled BSDF material.
+
+    NOTE (2026-09-01): `_textures/` was emptied on purpose — the downloaded CC0
+    photo textures are out, and the motor is to generate its own. So TODAY every
+    call here takes the `fallback_color` path and renders flat. That is a
+    supported state, not a bug: _tex_path() returns None and nothing crashes.
+    The image-texture plumbing below stays because it is correct and will be fed
+    by motor-generated maps; do not read it as a description of what currently
+    renders.
+
+    Geometry(Position, WORLD-space — same choice mood_valheim.py
     already proved for its own noise nodes, see _add_bump's docstring, so a
     shared material reads the same real-world grain size on a huge wall AND
     a tiny picket) -> Mapping (scale = tile size in meters) -> Image Texture
@@ -881,8 +890,9 @@ PATH_TEX_SLUG = {"pradera": "brown_mud_dry", "bosque": "brown_mud_dry", "hielo":
 # WOOD/WOOD_DARK biome routing (Judgment Day SUSPECT #2 fix, 2026-07-21):
 # same GROUND_TEX_SLUG pattern, so a future biome-specific plank/bark photo
 # is a one-line dict edit, not a rearchitecture. All 3 biomes currently
-# share the one downloaded slug per family (only brown_planks_03/
-# bark_brown_01 exist in _textures/ today) — the ROUTING is biome-aware
+# share one slug per family, and since _textures/ was emptied on 2026-09-01
+# NO slug resolves — every family falls back to flat colour until the motor
+# generates its own maps — the ROUTING is biome-aware
 # even though the VALUES aren't distinct yet; the per-house jitter_tone()
 # tint (see mat_textured's `tint` param) is what makes wood visually
 # distinct per house/biome in the meantime.

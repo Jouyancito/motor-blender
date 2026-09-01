@@ -2,3 +2,8 @@ _out/
 __pycache__/
 *.pyc
 .engram/
+
+# CC0 downloads are OUT (Joan, 2026-09-01): the motor generates its own
+# textures. mat_textured() degrades to flat colour when a file is absent, so
+# an empty _textures/ is a supported state, not a broken one.
+_textures/
