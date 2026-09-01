@@ -16,6 +16,7 @@ subieron el éxito de otro agente 0/3→2/3) + outer loop de SceneCraft. Tier A.
 | `elipsoide_apex.py` | Zona facial anclada al ápex del hocico (auto-adapta a geometría nueva) | pera del tan, re-anclada post-warp |
 | `contorno_2d.py` | Extraer contorno/perfil de silueta desde una imagen 2D (fg mask + cumsum) | contorno melena, warp tables |
 | `warp_perfil.py` | Re-proporcionar el cuerpo entero contra un perfil 2D (remapeo por masa + curva de anchos) | cirugía proporciones 2026-07-13 |
+| `material_swatch.py` | Probar que un material VARÍA sobre la geometría (cubos, no planos) + gate de alta frecuencia | hormigón parking 2026-09-01, con control positivo |
 | `ribbon_tinta.py` | Línea de tinta paramétrica que cabalga el relieve (raycast + strip grosor constante) | sonrisa v3 (curva + comisuras) |
 | `nails_asentados.py` | Cuñas de queratina asentadas en puntas (uñas/garras), material mate | uñas de pies (close-up verificado) |
 | `bvh_glue.py` | Conformar/pegar un objeto a la superficie con offset proud por normal | mouth_lip re-glue |
