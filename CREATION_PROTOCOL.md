@@ -76,6 +76,78 @@ garden/livestock scaling off a structure that houses zero people (SUSPECT #7) �
 rule (population → garden/livestock budget) applied without checking that every term in the
 count actually represents what the rule assumes it represents.
 
+### 2c. The research must end in PARAMETERS — and in BOTH halves of them
+
+Joan, 2026-08-23: *"a veces te digo investigar, pero me buscas 1 o 2 referencias y eso es todo,
+**necesito parámetros**"*. Minimum 4-5 independent sources, covering the RANGE of variation, and
+the synthesis ends in a table the generator can consume — name, value, unit, source. Prose that
+has to be re-interpreted at modelling time gets re-decided by eye, which is the thing the
+research existed to prevent.
+
+**The table has TWO halves, and both are mandatory:**
+
+| Half | What it holds | How it fails |
+|---|---|---|
+| **MEASURE** | how long, how many, how fast, what ratio | easy to source, easy to verify — so it is the half that always gets written |
+| **STRUCTURE** | per moving part: what PLANE it occupies, what ANGLE it holds relative to the body, and what LIMITS it | needs anatomy, not a fact sheet — so it is the half that always gets skipped |
+
+**A part with no structural row is not modelled. It is researched first.**
+
+**The real example this rule is made of (turtle, 2026-08-24).** The reference sheet had every
+measure: carapace 0.845 m, height/length band 0.28-0.32, 5 vertebral scutes, 12 marginal pairs,
+gait `lateral_sequence`, 0.54 m/s. All of it was hit. The ratio landed in band. And Joan looked
+at the model and said the legs all point the same way and the head is just a sphere — because
+not one of those parameters was STRUCTURAL. The sheet described how big the turtle is and never
+described how it is put together.
+
+One search closed it: in turtles *"the movement of the humerus occurs predominantly in the
+horizontal plane while the movements of the distal limb occur predominantly in the vertical
+plane, hence a typical sprawled posture"* (J. Exp. Biol.). The upper arm goes OUT sideways, the
+forearm drops DOWN — an L-shaped elbow, which is why the four legs point into four different
+quadrants. Four identical vertical cones cannot read as a turtle no matter how correct the
+shell is. Same search also gave the animation its asymmetry: forelimb protraction is unusually
+high, retraction is limited by the carapace-plastron bridge.
+
+**None of that needed the client to explain it.** It is a documented fact about an animal that
+exists. Joan's framing is the rule: *"si te digo que inventes algo que no hay en la realidad...
+ahí sí hay que explicarte cada movimiento. Pero todo lo que estamos haciendo está en la
+realidad. Están las referencias."* When the subject is real, missing structure is a research
+failure, not a briefing failure.
+
+### 2d. Every structural parameter needs a VISIBILITY assert
+
+Implementing a structural parameter is not the same as making it visible, and the difference is
+invisible in the code. Turtle, 2026-08-24, second pass: the sprawling posture was implemented
+correctly — humerus horizontal, forearm vertical, one quadrant per leg — and the model still
+read as four posts, because the shoulder sat at x=0.148 with a 0.105 humerus, putting the elbow
+at 0.25 **inside a shell of radius 0.295**. The horizontal humerus was there in the data and
+hidden under the carapace.
+
+So for each structural parameter, write the geometric condition that makes it VISIBLE, and make
+the build fail on it:
+
+```python
+print("[turtle] codo a %.3f m del eje, borde del caparazon %.3f m -> %s" % (...))
+if max(_elbow_out) <= SHELL_OVERHANG:
+    raise SystemExit("el codo queda bajo el caparazon -- la postura esparrancada no se lee")
+```
+
+That assert caught it on the very next run and refused to export. Without it the parameter would
+have shipped correct-and-invisible, which is indistinguishable from not having it — and it is
+exactly the shape of every other failure in this motor: the scute attribute that was painted and
+never wired, the shell overlap that measured 74% while rendering as a smooth cap, the showcase
+gate that checked a PNG existed rather than what was in it.
+
+**The pattern, stated once:** *a value that is correct in the data and invisible on screen is
+not done.* Structure asserts close the gap between the two, and they are cheap — one comparison
+and one `SystemExit` per parameter.
+
+**Translation rule for step 1** (the other half of this): every sentence of "what it is" must
+end in a NUMBER or an ORIENTATION. *"Webbed feet"* is not a completed point; *"humerus
+horizontal, forearm vertical, yaw ±40° per quadrant"* is. Correct prose that never becomes
+geometry is the recurring failure — it also produced hair modelled as a uniform offset after
+writing "hair is combed in one direction".
+
 ## 3. Concrete dimensions/proportions against the 1.80 m mannequin
 
 Before building, write down the object's key dimensions as explicit numbers checked against
