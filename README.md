@@ -85,3 +85,32 @@ leerlo junto a `RECETAS.md` antes de generar un asset/módulo nuevo.
    original) y apuntar `corporeo_step.py` acá — cierra la duplicación.
 4. Comparar `game/tools/visual_gate/` (SSIM/IoU/ΔE propio del juego) contra
    `gate/` de acá — puede que ya sean equivalentes y uno sobre.
+
+## Memoria (engram) — el motor es TRANSVERSAL
+
+`.engram/config.json` declara `project_name: motor-blender` desde el 2026-09-02.
+Antes decía `another-game-of-dungeon`, lo que archivaba las lecciones del motor
+bajo el proyecto del juego — incorrecto, porque el motor ya se usa también para
+arquitectura y para el corpóreo.
+
+**Consecuencia que hay que conocer**: el servidor MCP de engram resuelve el
+proyecto por SU PROPIO directorio de trabajo, no por la carpeta que uno está
+editando. Así que el proyecto `motor-blender` recién existe cuando se abre una
+sesión **desde esta carpeta**. Si trabajás el motor desde `~`, la memoria cae en
+`the_j` y queda invisible para `joan-status` y para cualquier `mem_search` del
+motor.
+
+> Para trabajar el motor: abrir la sesión parado en `~/motor-blender`.
+
+Observaciones históricas del motor anteriores a esa fecha están repartidas entre
+los proyectos `another-game-of-dungeon` y `the_j`. Engram no expone borrado ni
+reasignación de proyecto en la superficie MCP, así que quedan ahí; buscarlas por
+`topic_key` (`motor/...`) antes que por proyecto.
+
+## Paquete para revisión externa
+
+El repo es privado, así que pasarle la URL a otra IA no sirve — no puede leerlo.
+`python tools/make_review_bundle.py` genera `_out/MOTOR_BUNDLE.md` (~84 KB,
+~22k tokens): brief + lecciones + protocolo + índice de recetas + auditorías +
+una receta de ejemplo, sin el código de los generadores. Ese archivo se sube o
+se pega en el chat de la otra IA. Se regenera, no se commitea.
