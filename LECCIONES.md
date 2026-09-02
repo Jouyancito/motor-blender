@@ -205,6 +205,38 @@ conclusión de ahí.
 
 ---
 
+## 14. "No medido" no es "aprobado" — y lo escrito no es lo gateado
+
+Las dos mitades salieron de una revisión externa (2026-09-02): cuatro modelos leyeron el
+método por separado y **los cuatro** llegaron al mismo par de conclusiones.
+
+**Primera: un veredicto binario no tiene dónde poner "no se midió".** Un check que no corrió
+y un check que pasó valen lo mismo, así que el que falta se suma callado a los que pasaron. Ya
+se pagó: el gate de showcase preguntaba *"¿hay un PNG más nuevo que el .glb?"* y cuatro mobs
+salieron blancos un mes — el check de color nunca corrió y nada lo dijo. Ahora hay cuatro
+estados (`PASS` · `FAIL` · `NOT_TESTED` · `NOT_APPLICABLE`), y **un reporte con `NOT_TESTED`
+no aprueba**. `NOT_APPLICABLE` exige razón escrita: sin ella es un `NOT_TESTED` con modales, que
+es exactamente cómo una lista de exenciones se pudre hasta ser la lección 8.
+
+**Segunda: el preflight ya decía lo correcto y no lo hacía cumplir.** El punto 4d dice, en capa
+0, *"parte sin renglón estructural = NO se modela, se investiga primero"*. Nada lo verificaba.
+Medido el mismo día: **84 carpetas de referencia, 83 `_synthesis.md`, 3 specs de movimiento,
+0 specs estructurales.**
+
+> **Una regla escrita en el checklist que el agente redacta en su propia respuesta no es un
+> control: es una intención.** El que decide es el `SystemExit`.
+
+Detalle que importa para leer críticas externas: dos de los cuatro modelos afirmaron que
+`_glb_truth_render.py` *"no está en ningún gate"*. Es falso desde el 2026-08-23 —
+`build_mob.py` lo corre fail-closed. Lo sacaron de una auditoría de ese día sin notar que el
+arreglo es del mismo día. **Un revisor externo sólo puede ver la foto que le mandás**, y una
+auditoría vieja se lee como el presente.
+
+Herramientas: `recetas/verdict.py`, `recetas/asset_spec.py`, `recetas/preflight_router.py`,
+`tools/test_gates.py`.
+
+---
+
 ## Herramientas que salieron de estas lecciones
 
 | Herramienta | Qué resuelve |
@@ -217,3 +249,7 @@ conclusión de ahí.
 | `mob_lab.tscn` | banco en vivo: piso plano, luz neutra, IA congelada, animaciones por tecla |
 | `_carapace.py` | construye un carapacho DESDE sus escudos (lección 6) |
 | `material_swatch.py` | cubos + métrica de alta frecuencia: prueba que un material VARÍA sobre la geometría; falla el build si no (lección 12) |
+| `verdict.py` | cuatro estados: `NOT_TESTED` deja de confundirse con `PASS`; `NOT_APPLICABLE` exige razón (lección 14) |
+| `asset_spec.py` | convierte el preflight 4d en gate: parte móvil sin renglón estructural → `SystemExit` (lección 14) |
+| `preflight_router.py` | resuelve QUÉ reglas aplican desde QUÉ se construye; una técnica descartada frena el build (lección 1) |
+| `tools/test_gates.py` | fixtures adversariales: cada gate contra un caso que DEBE fallar (lección 12) |

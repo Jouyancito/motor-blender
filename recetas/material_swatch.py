@@ -44,8 +44,13 @@
 # shipping a flat asset.
 
 import math
+import os
+import sys
 
 import bpy
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from recetas.verdict import Report, PASS, FAIL, NOT_APPLICABLE
 
 
 # Blender's bundled Python has NO Pillow, so all pixel work goes through
@@ -178,7 +183,7 @@ def _measure(png_path, names, res_per_swatch, height, margin=0.14, step=2):
     return stats
 
 
-def assert_materials_vary(stats, min_detail=0.00010, exempt=()):
+def assert_materials_vary(stats, min_detail=0.00010, exempt=None):
     """
     Fail the build when a material renders flat over real 3D geometry.
 
@@ -203,25 +208,46 @@ def assert_materials_vary(stats, min_detail=0.00010, exempt=()):
     exactly zero on a uniform surface (which is what makes the control read
     0.00000) while preserving genuine texture. Turning denoising off does NOT
     widen the margin -- it raises the floor for everything, since Cycles noise
-    is itself high-frequency. Put genuinely uniform
-    materials (paint, trim, glass) in `exempt` rather than lowering the
-    threshold for everyone -- a threshold quietly relaxed to make a build pass
-    is lesson 8.
+    is itself high-frequency.
+
+    `exempt` is a dict {material_name: reason}, NOT a list. Four external
+    reviewers (2026-09-02) flagged the original bare tuple as lesson 8 waiting
+    to happen: an exemption list nobody has to justify grows every time a build
+    is inconvenient, and ends up silencing the gate it belongs to. A reason is
+    cheap to write once and is the only thing that separates "this material is
+    meant to be uniform" from "this gate annoyed me".
+
+    Returns a Report, so an exempted material shows as NOT_APPLICABLE with its
+    reason rather than vanishing from the output.
     """
-    flat = [
-        f"{name}: detail={s['detail']:.5f} (min {min_detail:.5f})"
-        for name, s in stats.items()
-        if name not in exempt and s["detail"] < min_detail
-    ]
-    if flat:
+    if exempt is None:
+        exempt = {}
+    if not isinstance(exempt, dict):
         raise SystemExit(
+            "assert_materials_vary: `exempt` debe ser {material: razon}, no %s.\n"
+            "Una exencion sin razon es un check que nadie corrio, disfrazado de\n"
+            "aprobado. Ejemplo: exempt={'glass': 'vidrio pulido, uniforme a "
+            "proposito'}" % type(exempt).__name__)
+
+    report = Report("MATERIAL VARIATION")
+    for name, s in stats.items():
+        detail = s["detail"]
+        if name in exempt:
+            report.add(name, NOT_APPLICABLE, reason=exempt[name])
+        elif detail < min_detail:
+            report.add(name, FAIL,
+                       "detail=%.5f < %.5f" % (detail, min_detail))
+        else:
+            report.add(name, PASS, "detail=%.5f" % detail)
+
+    if report.failed:
+        raise SystemExit(
+            report.render() + "\n"
             "FLAT MATERIAL(S) -- the texture does not vary over the geometry.\n"
-            "  " + "\n  ".join(flat) + "\n"
             "Check, in this order:\n"
             "  1. Is the texture banded on an axis the surface actually spans?\n"
             "     (a slab seen from below needs a different axis than a column)\n"
             "  2. Is the scale sane? With Object coords it is cycles PER METRE.\n"
             "  3. Do the chained Mix/ColorRamp stages still leave any amplitude?\n"
-            "     Hand-compute the best-case output before trusting the graph."
-        )
-    return stats
+            "     Hand-compute the best-case output before trusting the graph.")
+    return report
