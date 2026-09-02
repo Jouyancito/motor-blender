@@ -1,7 +1,11 @@
 _out/
 __pycache__/
 *.pyc
-.engram/
+
+# Local engram state stays out, but the project declaration is repo config:
+# it is what routes the motor's memory, so it must travel with the repo.
+.engram/*
+!.engram/config.json
 
 # CC0 downloads are OUT (Joan, 2026-09-01): the motor generates its own
 # textures. mat_textured() degrades to flat colour when a file is absent, so
