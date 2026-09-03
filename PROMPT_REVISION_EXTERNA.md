@@ -92,9 +92,17 @@ Por sección, alto / medio / bajo, con una línea de por qué.
 
 ## Contexto adicional que puede importarte
 
-- El repo real es privado; el archivo adjunto es su núcleo conceptual, sin el
-  código de los generadores (~550 KB excluidos). Si una crítica requiere ver
-  código que no está, decilo en la sección 8.
+- **El repo completo es público: https://github.com/Jouyancito/motor-blender**
+  El archivo adjunto es su núcleo conceptual en un orden de lectura deliberado,
+  sin el código de los generadores (~550 KB excluidos por ruido). Si una crítica
+  necesita ver un generador entero, andá al repo. Decí igual en la sección 8 qué
+  te faltaba del paquete.
+- **Leé la parte 2 (ESTADO ACTUAL) antes que las auditorías.** Las auditorías
+  son de agosto y proponen arreglos que en varios casos ya están implementados.
+  En la primera ronda esto no estaba aclarado y dos de cuatro revisores
+  afirmaron como problema presente algo resuelto diez días antes — no por
+  descuido suyo, sino porque el paquete llevaba las auditorías que proponían los
+  arreglos y no los archivos que los implementaron.
 - Los documentos están en español salvo el protocolo de creación y el código,
   que están en inglés.
 - El equipo son dos: una persona con formación en arquitectura y diseño, y un
