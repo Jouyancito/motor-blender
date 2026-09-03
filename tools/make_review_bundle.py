@@ -3,11 +3,15 @@ make_review_bundle.py -- concatenate the motor's conceptual core into ONE file
 that can be pasted into (or uploaded to) another model for outside review.
 
 WHY THIS EXISTS (2026-09-02)
-The repo is PRIVATE, so handing another model the GitHub URL gets nothing: it
-cannot read it. And the full tree is ~645 KB of .md + .py, most of it generator
-code that is noise for a review of the METHOD. This bundles only the parts that
-carry the reasoning -- the brief, the lessons, the protocol, the recipe index --
-plus one recipe as a worked example of what a gate actually looks like here.
+The repo went PUBLIC on 2026-09-02 (github.com/Jouyancito/motor-blender), so a
+reviewer can now be handed the URL. The bundle still earns its place: the full
+tree is ~645 KB of .md + .py, most of it generator code that is noise for a
+review of the METHOD, and a model given a repo browses it in whatever order it
+likes. This fixes the reading order -- ask first, current state second, the
+August audits only afterwards -- which is precisely what the first round got
+wrong.
+
+Give reviewers BOTH: the bundle to read, the URL to check anything it omits.
 
 Run:
     python tools/make_review_bundle.py
@@ -76,9 +80,13 @@ EXTERNAL_PARTS = [
 
 HEADER = """# Motor de generación 3D — paquete para revisión externa
 
-Generado por `tools/make_review_bundle.py`. Es el núcleo conceptual de un repo
-privado: se excluyó el código de los generadores (~550 KB) porque es ruido para
-una revisión del MÉTODO.
+Generado por `tools/make_review_bundle.py`. Es el núcleo conceptual del motor:
+se excluyó el código de los generadores (~550 KB) porque es ruido para una
+revisión del MÉTODO.
+
+**El repo completo es público: https://github.com/Jouyancito/motor-blender** —
+si algo de acá te queda corto, o querés ver un generador entero, está ahí. Este
+paquete existe para fijar el ORDEN DE LECTURA, no para ocultar nada.
 
 **Qué se espera de quien lee esto**: crítica del método de trabajo, no del
 resultado artístico. Las preguntas concretas están al final de la parte 1.

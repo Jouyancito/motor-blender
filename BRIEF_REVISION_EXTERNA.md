@@ -124,5 +124,25 @@ pasó por el gate un caso que se sabía malo.
 
 ---
 
-*Fuente completa: `LECCIONES.md` (13 lecciones con los casos), `CREATION_PROTOCOL.md` (el
-protocolo), `recetas/RECETAS.md` (biblioteca de recetas verificadas).*
+## Contexto que puede importarte
+
+- **El repo completo es público: https://github.com/Jouyancito/motor-blender**
+  El paquete adjunto es su núcleo conceptual en un orden de lectura deliberado, sin el código de
+  los generadores (~550 KB excluidos por ruido). Si una crítica necesita ver un generador entero,
+  está en el repo. Decí en la sección 8 qué te faltaba del paquete.
+- **Leé la parte 2 (ESTADO ACTUAL) antes que las auditorías.** Las auditorías son de agosto y
+  proponen arreglos que en varios casos ya están implementados. En la primera ronda de revisión
+  eso no estaba aclarado, y dos de cuatro revisores afirmaron como problema presente algo que se
+  había resuelto diez días antes. No fue culpa de ellos: el paquete llevaba las auditorías que
+  proponían los arreglos y no los archivos que los implementaron.
+- El equipo son dos: una persona con formación en arquitectura y diseño, y un agente LLM. No hay
+  más gente para repartir revisión cruzada.
+- Es trabajo real en producción, no un experimento académico. Las restricciones de tiempo y de
+  presupuesto de cómputo son reales.
+- Los documentos están en español salvo `CREATION_PROTOCOL.md` y el código, que están en inglés.
+
+---
+
+*Fuente completa: `ESTADO_ACTUAL.md` (qué está gateado hoy y qué está sólo escrito),
+`LECCIONES.md` (14 lecciones con sus casos), `CREATION_PROTOCOL.md` (el protocolo),
+`recetas/RECETAS.md` (biblioteca de recetas verificadas).*

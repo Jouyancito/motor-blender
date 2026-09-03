@@ -109,8 +109,16 @@ reasignación de proyecto en la superficie MCP, así que quedan ahí; buscarlas 
 
 ## Paquete para revisión externa
 
-El repo es privado, así que pasarle la URL a otra IA no sirve — no puede leerlo.
-`python tools/make_review_bundle.py` genera `_out/MOTOR_BUNDLE.md` (~84 KB,
-~22k tokens): brief + lecciones + protocolo + índice de recetas + auditorías +
-una receta de ejemplo, sin el código de los generadores. Ese archivo se sube o
-se pega en el chat de la otra IA. Se regenera, no se commitea.
+Este repo es **público** desde el 2026-09-02, así que a un revisor se le puede
+pasar la URL directamente.
+
+Aun así conviene darle además el paquete: `python tools/make_review_bundle.py`
+genera `_out/MOTOR_BUNDLE.md` (~165 KB, ~43k tokens) con el pedido, el estado
+actual, la capa 0 del repo consumidor, las lecciones, el protocolo, las
+auditorías y los gates — **en ese orden**. Un modelo al que le das un repo lo
+navega en el orden que se le ocurre, y la primera ronda de revisión demostró qué
+pasa cuando lee las auditorías de agosto antes que el estado actual: dos de
+cuatro revisores describieron como problema presente algo resuelto diez días
+antes.
+
+Se regenera, no se commitea (`_out/` está ignorado).
