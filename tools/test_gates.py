@@ -370,8 +370,9 @@ GAME_TOOLS = os.path.expanduser(
     "~/proyectos/Juego/DungeonParty-A/game/tools/blender")
 MEMORY = os.path.expanduser(
     "~/.claude/projects/-home-jouyan-proyectos/memory")
-_PTR = re.compile(r"^(?:(game|gametools|memory|game-doc):)?([^:#]+)"
-                  r"(?::(\d+)(?:-(\d+))?|#(\d+))?$")
+GAME_ART = os.path.expanduser("~/proyectos/Juego/DungeonParty-A/game/docs/art")
+_PTR = re.compile(r"^(?:(game|gametools|memory|gameart):)?([^:#|]+)"
+                  r"(?::(\d+)(?:-(\d+))?|#(\d+))?(?:\|(.+))?$")
 
 
 def resolve_pointer(ptr):
@@ -382,11 +383,9 @@ def resolve_pointer(ptr):
     m = _PTR.match(ptr)
     if not m:
         return "bad", "unparseable pointer %r" % ptr
-    kind, rel, a, b, lesson = m.groups()
+    kind, rel, a, b, lesson, anchor = m.groups()
     base = {None: ROOT, "game": GAME_REFS, "gametools": GAME_TOOLS,
-            "memory": MEMORY}.get(kind)
-    if kind == "game-doc":
-        return "unchecked", "outside reach: %s" % ptr
+            "memory": MEMORY, "gameart": GAME_ART}.get(kind)
     if not os.path.isdir(base):
         return "unchecked", "base dir missing for %r" % ptr
     path = os.path.join(base, rel)
@@ -400,10 +399,14 @@ def resolve_pointer(ptr):
         return "bad", "%s has no lesson %s" % (rel, lesson)
     if a:
         lo, hi = int(a), int(b or a)
-        if 1 <= lo <= hi <= len(lines):
-            return "ok", ""
-        return "bad", "%s:%d-%d outside the file (%d lines)" % (
-            rel, lo, hi, len(lines))
+        if not (1 <= lo <= hi <= len(lines)):
+            return "bad", "%s:%d-%d outside the file (%d lines)" % (
+                rel, lo, hi, len(lines))
+        if not anchor:
+            return "bad", ("%s has no |anchor: a line range without a content "
+                           "check drifts silently" % ptr)
+        if anchor not in "\n".join(lines[lo - 1:hi]):
+            return "bad", "anchor %r not found in %s:%d-%d" % (anchor, rel, lo, hi)
     return "ok", ""
 
 
@@ -414,11 +417,20 @@ def test_router_knowledge():
     # cannot say "bad" would make every pointer below meaningless.
     check("control: puntero bueno resuelve",
           resolve_pointer("LECCIONES.md#6")[0] == "ok"
-          and resolve_pointer("CREATION_PROTOCOL.md:151-172")[0] == "ok")
+          and resolve_pointer("CREATION_PROTOCOL.md:151-172|mannequin")[0] == "ok")
     check("control: leccion inexistente -> bad",
           resolve_pointer("LECCIONES.md#99")[0] == "bad")
     check("control: rango fuera del archivo -> bad",
-          resolve_pointer("LECCIONES.md:9990-9999")[0] == "bad")
+          resolve_pointer("LECCIONES.md:9990-9999|x")[0] == "bad")
+    check("control: ancla ausente en el rango -> bad (cita desplazada)",
+          resolve_pointer("CREATION_PROTOCOL.md:151-172|zzz_no_esta")[0] == "bad")
+    check("control: la cita vieja (RECETAS:36, desplazada +4) ahora falla",
+          resolve_pointer("recetas/RECETAS.md:36|get_viewport_screenshot")[0] == "bad")
+    check("control: rango sin ancla -> bad",
+          resolve_pointer("CREATION_PROTOCOL.md:151-172")[0] == "bad")
+    check("control: ancla correcta -> ok",
+          resolve_pointer("CREATION_PROTOCOL.md:151-172|1.80 m mannequin")[0]
+          == "ok")
     check("control: archivo inexistente -> bad",
           resolve_pointer("NOPE.md:1")[0] == "bad")
 
@@ -469,6 +481,8 @@ def test_router_knowledge():
                 os.path.join(ROOT, d["structure_spec"], "_structure_spec.md")))
     print("      citas verificadas: %d   sin verificar (fuera de alcance): %d"
           % (n_ok, n_unchecked))
+    check("el doc del juego existe: las citas gameart: se verifican de verdad",
+          os.path.isfile(os.path.join(GAME_ART, "_asset_creation_contract.md")))
     check("se verifico al menos una cita (el chequeo no esta ciego)", n_ok > 0)
 
     for k, (why, src) in router_knowledge.UNIVERSAL_DISCARDED.items():

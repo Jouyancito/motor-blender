@@ -7,15 +7,18 @@
 # resolves (file exists, line range inside the file, lesson id exists).
 #
 # SOURCE POINTER SYNTAX (checked by the fixtures)
-#     "CREATION_PROTOCOL.md:151-172"      repo file, line or line range
-#     "LECCIONES.md#6"                    lesson number
-#     "game:wolf/_synthesis.md:26-35"     DungeonParty-A game/docs/art/_references/
-#     "gametools:golem_guardian/build_golem_guardian.py:390-401"
-#                                         DungeonParty-A game/tools/blender/
-#     "memory:feedback_xxx.md:11-14"      ~/.claude/projects/-home-jouyan-proyectos/memory/
-#     "game-doc:art/_asset_creation_contract.md:402"   a doc outside the repo we
-#                                        cannot open from here; cited, unchecked
+#     "CREATION_PROTOCOL.md:151-172|anchor"   repo file, line or line range
+#     "LECCIONES.md#6"                        lesson number
+#     "game:wolf/_synthesis.md:26-35|anchor"  DungeonParty-A game/docs/art/_references/
+#     "gameart:_asset_creation_contract.md:409|anchor"   DungeonParty-A game/docs/art/
+#     "gametools:golem_guardian/build_golem_guardian.py:390-401|anchor"
+#                                             DungeonParty-A game/tools/blender/
+#     "memory:feedback_xxx.md:11-14|anchor"   ~/.claude/projects/-home-jouyan-proyectos/memory/
+# Every line-range pointer ends in "|anchor": a short substring that MUST appear
+# inside the cited lines. The fixtures check it, so a citation that drifts (rows
+# inserted above it) fails loudly instead of pointing at the wrong paragraph.
 #
+
 # FIELDS
 #     aliases              whole-word triggers (preflight_router matches them)
 #     established          the technique that works
@@ -38,16 +41,16 @@ UNIVERSAL_DISCARDED = {
     "viewport_screenshot_evidence": (
         "get_viewport_screenshot is a raw screen grab (black with Local View or "
         "without focus) and measures nothing: never verdict evidence",
-        "recetas/RECETAS.md:36"),
+        "recetas/RECETAS.md:40|get_viewport_screenshot"),
     "single_view_judgement": (
         "judging or presenting from one overview render hides the defects that "
         "only show from behind, above or below (eyeball through the eyelid, "
         "broken scalp edge, phantom brow on the nape)",
-        "memory:feedback_orbitar_siempre_antes_de_reportar.md:11-28"),
+        "memory:feedback_orbitar_siempre_antes_de_reportar.md:11-28|orbitar la zona"),
     "vertex_paint_for_sharp_features": (
         "nails and sharp features by vertex paint reach 28 paintable verts -> "
         "0.001; geometry, always",
-        "recetas/RECETAS.md:31"),
+        "recetas/RECETAS.md:35|vertex-paint"),
 }
 
 _ALL_VIEWS = ["cenital", "tresq_alto", "perfil", "frente", "atras",
@@ -82,9 +85,9 @@ CATEGORIES = {
                 "(almohadon): superficie + contorno 2D"),
         },
         "discarded_sources": {
-            "polygon_shells": "game-doc:art/_asset_creation_contract.md:402",
-            "offset_shell": "game-doc:art/_asset_creation_contract.md:402",
-            "blade_sticks_mane": "recetas/RECETAS.md:32",
+            "polygon_shells": "gameart:_asset_creation_contract.md:409|hair_polygon_shells",
+            "offset_shell": "gameart:_asset_creation_contract.md:409|hair_polygon_shells",
+            "blade_sticks_mane": "recetas/RECETAS.md:36|Melena por blades",
         },
         "must_read": [
             "art/_modeling_knowledge_base.md §pelo en 3 capas",
@@ -100,10 +103,10 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#4", "LECCIONES.md#6"],
         "sources": [
-            "LECCIONES.md:88-102",
-            "LECCIONES.md:59-72",
-            "memory:feedback_modelar_es_modelado_full.md:28-35",
-            "memory:feedback_orbitar_siempre_antes_de_reportar.md:11-28",
+            "LECCIONES.md:88-102|Pintar estructura",
+            "LECCIONES.md:59-72|prosa correcta",
+            "memory:feedback_modelar_es_modelado_full.md:28-35|Punto 0",
+            "memory:feedback_orbitar_siempre_antes_de_reportar.md:11-28|orbitar la zona",
         ],
     },
     # -------------------------------------------------------------- quelonio
@@ -127,8 +130,8 @@ CATEGORIES = {
         "discarded_sources": {
             "uv_sphere_painted": "LECCIONES.md#6",
             "trot_diagonal_pairs":
-                "game:turtle/motion/_motion_spec.md:38-44",
-            "shell_deforms": "game:turtle/motion/_motion_spec.md:28-30",
+                "game:turtle/motion/_motion_spec.md:38-44|TROTE",
+            "shell_deforms": "game:turtle/motion/_motion_spec.md:28-30|Es hueso",
         },
         "must_read": [
             "~/motor-blender/LECCIONES.md leccion 5 (medida vs estructura)",
@@ -150,9 +153,9 @@ CATEGORIES = {
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#5", "LECCIONES.md#6",
                     "LECCIONES.md#9", "LECCIONES.md#10", "LECCIONES.md#11"],
         "sources": [
-            "game:turtle/_synthesis.md:195-242",
-            "game:turtle/motion/_motion_spec.md:28-44",
-            "CREATION_PROTOCOL.md:79-149",
+            "game:turtle/_synthesis.md:195-242|UPPER_LIMB_PLANE",
+            "game:turtle/motion/_motion_spec.md:28-44|TROTE",
+            "CREATION_PROTOCOL.md:79-149|2c. The research",
         ],
     },
     # ---------------------------------------------------- material_procedural
@@ -180,7 +183,7 @@ CATEGORIES = {
         },
         "discarded_sources": {
             "shader_nodes_export": "LECCIONES.md#9",
-            "byte_color": "gametools:golem_guardian/build_golem_guardian.py:390-401",
+            "byte_color": "gametools:golem_guardian/build_golem_guardian.py:390-401|BYTE_COLOR",
             "plane_swatch": "LECCIONES.md#12",
             "stddev_as_texture_metric": "LECCIONES.md#12",
         },
@@ -203,8 +206,8 @@ CATEGORIES = {
                             "judged at the size of the asset that carries it"),
         "lessons": ["LECCIONES.md#3", "LECCIONES.md#9", "LECCIONES.md#12"],
         "sources": [
-            "LECCIONES.md:158-186",
-            "recetas/material_swatch.py:1-50",
+            "LECCIONES.md:158-186|control positivo",
+            "recetas/material_swatch.py:1-50|CUBES",
         ],
     },
     # --------------------------------------------------------- export_godot
@@ -232,7 +235,7 @@ CATEGORIES = {
         "use_size_exempt": ("the export step has no use size of its own; the "
                             "asset family entry carries it"),
         "lessons": ["LECCIONES.md#9", "LECCIONES.md#14"],
-        "sources": ["LECCIONES.md:124-133", "LECCIONES.md:208-240"],
+        "sources": ["LECCIONES.md:124-133|ground truth", "LECCIONES.md:208-240|No medido"],
     },
     # ------------------------------------------------------------- mamifero
     "mamifero": {
@@ -250,7 +253,7 @@ CATEGORIES = {
                 "aplicarlo dos veces y las dos derivan"),
         },
         "discarded_sources": {
-            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35",
+            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35|build_goat",
         },
         "must_read": [
             "CREATION_PROTOCOL.md §1 (categoria hermana) y §4 (funcion compartida)",
@@ -275,15 +278,15 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "size_ranges": [
             {"aliases": ["lobo", "wolf"], "height_m": (0.66, 0.84),
-             "source": "game:wolf/_synthesis.md:14"},
+             "source": "game:wolf/_synthesis.md:14|Alzada"},
         ],
         "lessons": ["LECCIONES.md#4", "LECCIONES.md#5", "LECCIONES.md#11"],
         "sources": [
-            "game:wolf/_synthesis.md:10-35",
-            "game:rat_rodent/_synthesis.md:6-24",
-            "CREATION_PROTOCOL.md:22-35",
-            "CREATION_PROTOCOL.md:174-196",
-            "TECNICAS.md:136-145",
+            "game:wolf/_synthesis.md:10-35|Medidas reales",
+            "game:rat_rodent/_synthesis.md:6-24|Medidas reales",
+            "CREATION_PROTOCOL.md:22-35|real-world object category",
+            "CREATION_PROTOCOL.md:174-196|shared function",
+            "TECNICAS.md:136-145|gait_brokenness",
         ],
     },
     # ----------------------------------------------------------------- prop
@@ -308,9 +311,9 @@ CATEGORIES = {
                 "parametrizar la compartida"),
         },
         "discarded_sources": {
-            "generic_primitive_stand_in": "CREATION_PROTOCOL.md:46-52",
-            "midpoint_clearance_check": "CREATION_PROTOCOL.md:65-72",
-            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35",
+            "generic_primitive_stand_in": "CREATION_PROTOCOL.md:46-52|recognizable silhouette",
+            "midpoint_clearance_check": "CREATION_PROTOCOL.md:65-72|hangline_path_conflict",
+            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35|build_goat",
         },
         "must_read": [
             "CREATION_PROTOCOL.md §2b (logica funcional) y §3 (contra 1.80 m)",
@@ -326,9 +329,9 @@ CATEGORIES = {
         "use_size": _ENV_SIZES,
         "lessons": ["LECCIONES.md#7", "LECCIONES.md#8"],
         "sources": [
-            "CREATION_PROTOCOL.md:54-78",
-            "CREATION_PROTOCOL.md:151-172",
-            "memory:feedback_proportion_rule_scale_ref.md:10-17",
+            "CREATION_PROTOCOL.md:54-78|Functional/logical",
+            "CREATION_PROTOCOL.md:151-172|1.80 m mannequin",
+            "memory:feedback_proportion_rule_scale_ref.md:10-17|1.80",
         ],
     },
     # ---------------------------------------------------------- arquitectura
@@ -353,9 +356,9 @@ CATEGORIES = {
                 "maniqui en un solo lugar"),
         },
         "discarded_sources": {
-            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35",
-            "detail_what_will_be_covered": "TECNICAS.md:46-47",
-            "unpinned_dimension": "CREATION_PROTOCOL.md:167-172",
+            "copy_paste_sibling": "CREATION_PROTOCOL.md:28-35|build_goat",
+            "detail_what_will_be_covered": "TECNICAS.md:46-47|no detallar",
+            "unpinned_dimension": "CREATION_PROTOCOL.md:167-172|add_door",
         },
         "must_read": [
             "CREATION_PROTOCOL.md §3 (dimensiones contra 1.80 m) y §4",
@@ -373,10 +376,10 @@ CATEGORIES = {
         "use_size": _ENV_SIZES,
         "lessons": ["LECCIONES.md#7", "LECCIONES.md#8"],
         "sources": [
-            "CREATION_PROTOCOL.md:151-172",
-            "CREATION_PROTOCOL.md:174-196",
-            "TECNICAS.md:38-47",
-            "memory:feedback_proportion_rule_scale_ref.md:10-26",
+            "CREATION_PROTOCOL.md:151-172|1.80 m mannequin",
+            "CREATION_PROTOCOL.md:174-196|shared function",
+            "TECNICAS.md:38-47|kitbash",
+            "memory:feedback_proportion_rule_scale_ref.md:10-26|1.80",
         ],
     },
     # --------------------------------------------------------------- bioma
@@ -399,7 +402,7 @@ CATEGORIES = {
                 "salen de CORTAR un solido con planos"),
         },
         "discarded_sources": {
-            "noise_normal_displacement_rock": "recetas/biome_facet.py:3-18",
+            "noise_normal_displacement_rock": "recetas/biome_facet.py:3-18|WHY THIS EXISTS",
         },
         "must_read": [
             "TECNICAS.md §4 scatter_biome",
@@ -417,10 +420,10 @@ CATEGORIES = {
         "use_size": _ENV_SIZES,
         "lessons": ["LECCIONES.md#1", "LECCIONES.md#2"],
         "sources": [
-            "TECNICAS.md:10-21",
-            "TECNICAS.md:61-73",
-            "recetas/biome_facet.py:1-18",
-            "recetas/use_size.py:13-17",
+            "TECNICAS.md:10-21|distancia al foco",
+            "TECNICAS.md:61-73|scatter_biome",
+            "recetas/biome_facet.py:1-18|planar-decomposition",
+            "recetas/use_size.py:13-17|tree_pack",
         ],
     },
 }
