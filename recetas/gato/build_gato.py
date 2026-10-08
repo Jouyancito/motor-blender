@@ -20,16 +20,12 @@ import random
 import sys
 from mathutils import Vector, Matrix, noise as mnoise
 
-from recetas import preflight_router
-from recetas.verdict import Report, PASS, FAIL, NOT_TESTED, NOT_APPLICABLE
-
-# 0b: Require the established cat technique — FLOAT_COLOR + shape keys.
-_ = preflight_router.require_technique("gato", "floating_color_with_shape_keys")
-
-# 0b: Cat structure — must have FLOAT_COLOR vertex layer.
-_ = preflight_router.require_structure("gato", "float_color_layer")
-
-OUT_DIR = os.path.dirname(os.path.abspath(__file__))
+# The gates (technique, structure, scale evidence, use size) are NOT called from
+# here: nothing in a generator can be trusted to call them. They run from the
+# single entry point, recetas/motor_run.py. This file only builds.
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+OUT_DIR = os.environ.get("MOTOR_OUT_DIR") or os.path.join(REPO, "_out", "gato")
+os.makedirs(OUT_DIR, exist_ok=True)
 REN_DIR = os.path.join(OUT_DIR, "renders")
 ANIM_DIR = os.path.join(REN_DIR, "anim")
 os.makedirs(ANIM_DIR, exist_ok=True)
@@ -74,15 +70,15 @@ PALETTES = {
 }
 palette = PALETTES.get(COLOR, PALETTES["gris"])
 
-def bake_vcol(palette_name):
-    """Write the FLOAT_COLOR layer for a habitat palette."""
-    p = PALETTES[palette_name]
+def bake_vcol(me, palette_name):
+    """Write the FLOAT_COLOR layer for a palette onto mesh `me`."""
+    p = PALETTES.get(palette_name, PALETTES["gris"])
     bm = bmesh.new()
     bm.from_mesh(me)
     layer = bm.loops.layers.float_color.get("Col") or bm.loops.layers.float_color.new("Col")
     for face in bm.faces:
         for loop in face.loops:
-            zn = (loop.vert.co.z + 0.5) / 1.0  # normalize from -0.5 to 0.5 range
+            zn = max(0.0, min(1.0, loop.vert.co.z + 0.5))  # z spans about -0.35..0.45
             col = (p["deep"][0] + (p["bright"][0] - p["deep"][0]) * zn ** 1.25,
                    p["deep"][1] + (p["bright"][1] - p["deep"][1]) * zn ** 1.25,
                    p["deep"][2] + (p["bright"][2] - p["deep"][2]) * zn ** 1.25)
@@ -95,8 +91,6 @@ def lerp3(a, b, t):
     return (a[0] + (b[0] - a[0]) * t,
             a[1] + (b[1] - a[1]) * t,
             a[2] + (b[2] - a[2]) * t)
-
-bake_vcol(COLOR)
 
 # ---------- body: basic feline form ----------
 # Cat body shape: characteristic feline proportions
@@ -133,7 +127,7 @@ import bpy.types as types
 
 # ---------- vertex colour: FLOAT_COLOR (never BYTE_COLOR) ----------
 # This is critical — BYTE_COLOR makes colors ~12x darker (confirmed project bug)
-bake_vcol(COLOR)
+bake_vcol(me, COLOR)
 
 # ---------- shape keys: cat facial expressions ----------
 def add_key(name):
@@ -144,50 +138,38 @@ def add_key(name):
 # Basis key
 add_key("Basis")
 
-# Shape keys for cat expressions
-# Whisker pads
+# Each expression key stores ABSOLUTE positions in sk.data. (An earlier version
+# edited `me.vertices` instead, which moves the basis and leaves every key
+# identical to it: shape keys that do nothing.)
+def displace(key, predicate, dx=0.0, dy=0.0, dz=0.0):
+    for i, v in enumerate(me.vertices):
+        if predicate(v.co):
+            c = key.data[i].co
+            key.data[i].co = (c.x + dx, c.y + dy, c.z + dz)
+
 sk = add_key("whisker_pad_L")
-for i, v in enumerate(me.vertices):
-    if v.co.x < -0.1:  # left side
-        v.co.x -= 0.04
+displace(sk, lambda c: c.x < -0.1, dx=-0.04)
 
 sk = add_key("whisker_pad_R")
-for i, v in enumerate(me.vertices):
-    if v.co.x > 0.1:  # right side
-        v.co.x += 0.04
+displace(sk, lambda c: c.x > 0.1, dx=0.04)
 
-# Ear tilts
+# Ear tilts: upper left / right area
 sk = add_key("ear_tilt_L")
-for i, v in enumerate(me.vertices):
-    # Upper left area - ear
-    if v.co.z > 0.2 and v.co.x < -0.1:
-        v.co.z += 0.06
+displace(sk, lambda c: c.z > 0.2 and c.x < -0.1, dz=0.06)
 
 sk = add_key("ear_tilt_R")
-for i, v in enumerate(me.vertices):
-    # Upper right area - ear
-    if v.co.z > 0.2 and v.co.x > 0.1:
-        v.co.z += 0.06
+displace(sk, lambda c: c.z > 0.2 and c.x > 0.1, dz=0.06)
 
-# Mouth expressions
+# Mouth: lower jaw area
 sk = add_key("mouth_open")
-for i, v in enumerate(me.vertices):
-    # Lower jaw area
-    if v.co.z < -0.35:
-        v.co.z += 0.03
+displace(sk, lambda c: c.z < -0.35, dz=0.03)
 
-# Eye expressions
+# Eyes: approximate eye area
 sk = add_key("eye_wide_L")
-for i, v in enumerate(me.vertices):
-    # Approximate eye area (left)
-    if v.co.z > 0.1 and v.co.x < -0.08 and v.co.y > -0.25 and v.co.y < 0.25:
-        v.co.z += 0.04
+displace(sk, lambda c: c.z > 0.1 and c.x < -0.08 and -0.25 < c.y < 0.25, dz=0.04)
 
 sk = add_key("eye_wide_R")
-for i, v in enumerate(me.vertices):
-    # Approximate eye area (right)
-    if v.co.z > 0.1 and v.co.x > 0.08 and v.co.y > -0.25 and v.co.y < 0.25:
-        v.co.z += 0.04
+displace(sk, lambda c: c.z > 0.1 and c.x > 0.08 and -0.25 < c.y < 0.25, dz=0.04)
 
 # Animate the shape keys
 kb = me.shape_keys.key_blocks
@@ -257,6 +239,13 @@ scene.collection.objects.link(light_obj2)
 scene.render.resolution_x = 512
 scene.render.resolution_y = 640
 
+cam_data = bpy.data.cameras.new("gata_cam")
+cam_obj = bpy.data.objects.new("gata_cam", cam_data)
+cam_obj.location = (0.0, -3.2, 1.0)
+cam_obj.rotation_euler = (math.radians(86), 0.0, 0.0)
+scene.collection.objects.link(cam_obj)
+scene.camera = cam_obj
+
 # Still render - front view
 scene.render.filepath = os.path.join(REN_DIR, f"{NAME}.png")
 bpy.ops.render.render(write_still=True)
@@ -280,11 +269,6 @@ for label, sampler in [("idle", anim_idle)]:
                 kb[k].value = vals.get(k, 0.0)
                 kb[k].keyframe_insert("value", frame=f)
     
-    # Object location can animate subtle breathing
-    if "z" in vals:
-        body.location.z = 0.02 * math.sin(2 * math.pi * t)
-        body.keyframe_insert("location", frame=f)
-    
     sk_ad.action = None
     obj_ad.action = None
     
@@ -296,10 +280,9 @@ for k in ["whisker_pad_L", "whisker_pad_R", "ear_tilt_L", "ear_tilt_R",
     if k in kb:
         kb[k].value = 0.0
 
-body.location = (0, 0, 0)
-for k in kb.keys():
-    if k.value != 0.0:
-        kb[k].value = 0.0
+# Rest the body on the floor (z = 0) so it can be judged beside a 1.80 m figure.
+body.location = (0, 0, -min(v.co.z for v in me.vertices))
+bpy.context.view_layer.update()
 
 # Save
 bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT_DIR, f"{NAME}_wip.blend"))
