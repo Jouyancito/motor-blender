@@ -44,7 +44,7 @@ UNIVERSAL_DISCARDED = {
     "viewport_screenshot_evidence": (
         "get_viewport_screenshot is a raw screen grab (black with Local View or "
         "without focus) and measures nothing: never verdict evidence",
-        "recetas/RECETAS.md:40|get_viewport_screenshot"),
+        "recetas/RECETAS.md:44|get_viewport_screenshot"),
     "single_view_judgement": (
         "judging or presenting from one overview render hides the defects that "
         "only show from behind, above or below (eyeball through the eyelid, "
@@ -53,7 +53,7 @@ UNIVERSAL_DISCARDED = {
     "vertex_paint_for_sharp_features": (
         "nails and sharp features by vertex paint reach 28 paintable verts -> "
         "0.001; geometry, always",
-        "recetas/RECETAS.md:35|vertex-paint"),
+        "recetas/RECETAS.md:39|vertex-paint"),
 }
 
 # Mesh-gate limits (recetas/mesh_quality.py DEFAULT_LIMITS semantics). Every
@@ -114,7 +114,7 @@ CATEGORIES = {
         "discarded_sources": {
             "polygon_shells": "gameart:_asset_creation_contract.md:409|hair_polygon_shells",
             "offset_shell": "gameart:_asset_creation_contract.md:409|hair_polygon_shells",
-            "blade_sticks_mane": "recetas/RECETAS.md:36|Melena por blades",
+            "blade_sticks_mane": "recetas/RECETAS.md:40|Melena por blades",
         },
         "must_read": [
             "art/_modeling_knowledge_base.md §pelo en 3 capas",
