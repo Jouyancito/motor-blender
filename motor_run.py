@@ -417,9 +417,21 @@ def step_scale(ctx):
     rep = scale_ref.require_scale_evidence(
         ctx["evidence"], asset_objects=ctx["asset_objects"],
         expected_height_m=sz.get("range_m") if sz.get("dim") == "height" else None,
-        expected_span_m=sz.get("range_m") if sz.get("dim") == "span" else None)
-    if not any(r["prop"] in ("asset_height_vs_source", "asset_span_vs_source")
-               and r["state"] == PASS for r in rep.rows):
+        expected_span_m=sz.get("range_m") if sz.get("dim") == "span" else None,
+        weak_source=bool(sz.get("weak")))
+    warned = False
+    for r in rep.rows:
+        if r["prop"].startswith("asset_") and "WARN" in r["detail"]:
+            warned = True
+            ctx["gaps"].append("size WARN: " + r["detail"])
+            print("  [motor_run] OPEN GAP  size WARN: %s" % r["detail"])
+    if sz.get("weak"):
+        gap = "size source is WEAK (%s)" % sz["basis"].split(":")[0]
+        ctx["gaps"].append(gap + ": a passing mention, not a spec")
+        print("  [motor_run] OPEN GAP  %s" % gap)
+    if not warned and not any(
+            r["prop"] in ("asset_height_vs_source", "asset_span_vs_source")
+            and r["state"] == PASS for r in rep.rows):
         gap = ("asset height was NOT checked against a sourced size range "
                "(none for this family)")
         ctx["gaps"].append(gap)

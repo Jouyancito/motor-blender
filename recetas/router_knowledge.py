@@ -35,7 +35,10 @@
 #     sources              pointers backing the entry as a whole
 #     gaps                 research holes declared instead of papered over
 #     size_ranges          [{"aliases": [...], "dim": "height"|"span", "range_m": (lo, hi),
-#                            "source": ptr, "basis": str?}]   span = widest horizontal extent
+#                            "source": ptr, "basis": str?, "weak": bool?}]   span = widest horizontal extent.
+#                            weak=True: the citation mentions the size in passing, it is
+#                            not an explicit measurement/spec -> the check only WARNS
+#                            (never FAILs) and a gap is recorded until a real spec exists
 #     glb_deliverable      pointer: the family's deliverable IS a .glb, so a run that
 #                          exports none FAILS (otherwise it only records a gap)
 #     creature             True for living/mob families (head-noun routing: a creature
@@ -538,8 +541,9 @@ CATEGORIES = {
         "structure_spec": None,
         "gaps": ["no per-part STRUCTURE table (plano/angulo/limite) for the golem "
                  "limbs in _references/golem (LECCIONES 5)",
-                 "golem scale is declared as '4,0 m' in two docs but not whether "
-                 "that is height; the +-20% range below is an initial tolerance"],
+                 "golem scale '4,0 m' appears only in passing in two docs (wolf:24, "
+                 "turtle:107): a weak source, so the height check only warns; "
+                 "needs a real size spec in _references/golem"],
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
@@ -547,7 +551,11 @@ CATEGORIES = {
             {"aliases": ["golem", "constructo", "construct"], "dim": "height",
              "range_m": (3.2, 4.8),
              "source": "game:wolf/_synthesis.md:24|golem (4,0 m)",
-             "basis": "4.0 m sourced; +-20% is an initial, uncalibrated tolerance"},
+             "weak": True,
+             "basis": "WEAK source: wolf/_synthesis.md:24 and turtle/_synthesis.md:107 "
+                      "mention 'golem (4,0 m)' only in passing as the example of a "
+                      "deliberately raised scale; neither says it is the HEIGHT. "
+                      "+-20% is an initial, uncalibrated tolerance"},
         ],
         "mesh": {"needs_uv": True, "source": "gametools:golem_guardian/build_golem_guardian.py:620|uv.new",
                  "basis": "the guardian builds UV layers for its normal-map textures; overlap limit initial, uncalibrated"},

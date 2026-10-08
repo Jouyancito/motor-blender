@@ -104,7 +104,7 @@ def world_z_extent(objs):
 def scale_evidence_report(mannequin_height, render_paths, asset_height=None,
                           expected_height_m=None, tol=0.02, exists=os.path.isfile,
                           size_of=os.path.getsize, asset_span=None,
-                          expected_span_m=None):
+                          expected_span_m=None, weak_source=False):
     """
     Pure core of the gate (no bpy): one row per property.
 
@@ -143,9 +143,12 @@ def scale_evidence_report(mannequin_height, render_paths, asset_height=None,
         r.add("asset_height_vs_source", NOT_TESTED, "asset height not measured")
     else:
         lo, hi = expected_height_m
-        state = PASS if lo <= asset_height <= hi else FAIL
+        inside = lo <= asset_height <= hi
+        # A WEAK source (size mentioned in passing, not a spec) can only warn.
+        state = PASS if inside else (NOT_TESTED if weak_source else FAIL)
         r.add("asset_height_vs_source", state,
-              "%.3f m vs sourced %.2f-%.2f m (%.0f %% of the mannequin)"
+              ("WARN (weak source) " if weak_source and not inside else "")
+              + "%.3f m vs sourced %.2f-%.2f m (%.0f %% of the mannequin)"
               % (asset_height, lo, hi, 100.0 * asset_height / MANNEQUIN_H))
     if expected_span_m is not None:
         # Wingspan / nose-to-tail length: the sourced size of flyers and
@@ -154,8 +157,11 @@ def scale_evidence_report(mannequin_height, render_paths, asset_height=None,
             r.add("asset_span_vs_source", NOT_TESTED, "asset span not measured")
         else:
             lo, hi = expected_span_m
-            r.add("asset_span_vs_source", PASS if lo <= asset_span <= hi else FAIL,
-                  "%.3f m vs sourced %.2f-%.2f m" % (asset_span, lo, hi))
+            inside = lo <= asset_span <= hi
+            r.add("asset_span_vs_source",
+                  PASS if inside else (NOT_TESTED if weak_source else FAIL),
+                  ("WARN (weak source) " if weak_source and not inside else "")
+                  + "%.3f m vs sourced %.2f-%.2f m" % (asset_span, lo, hi))
     return r
 
 
@@ -173,7 +179,7 @@ def world_xy_span(objs):
 
 def require_scale_evidence(render_paths, scene=None, asset_objects=None,
                            expected_height_m=None, verbose=True,
-                           expected_span_m=None):
+                           expected_span_m=None, weak_source=False):
     """
     Fail the build unless the mannequin is in the scene at 1.80 m AND the
     renders that show it exist. Same contract as use_size.require_use_size:
@@ -194,7 +200,8 @@ def require_scale_evidence(render_paths, scene=None, asset_objects=None,
     aspan = world_xy_span(asset_objects) if asset_objects else None
     rep = scale_evidence_report(mh, list(render_paths or []), ah,
                                 expected_height_m, asset_span=aspan,
-                                expected_span_m=expected_span_m)
+                                expected_span_m=expected_span_m,
+                                weak_source=weak_source)
     if verbose:
         print(rep.render())
     hard = [row for row in rep.rows

@@ -335,6 +335,28 @@ def test_scale_ref_and_views():
                                           exists=ok, size_of=big)
     check("altura del asset fuera del rango -> FAIL",
           rep.rows[2]["state"] == FAIL)
+    # Review 3 #4: a WEAK source warns, it never fails.
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=1.5,
+                                          expected_height_m=(3.2, 4.8), weak_source=True,
+                                          exists=ok, size_of=big)
+    row = rep.rows[-1]
+    check("fuente DEBIL fuera de rango -> WARN (NOT_TESTED), no FAIL",
+          row["state"] == NOT_TESTED and "WARN (weak source)" in row["detail"]
+          and not rep.failed, str(row))
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=1.5,
+                                          expected_height_m=(3.2, 4.8),
+                                          exists=ok, size_of=big)
+    check("control: la MISMA medicion con fuente explicita -> FAIL",
+          rep.rows[-1]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=4.0,
+                                          expected_height_m=(3.2, 4.8), weak_source=True,
+                                          exists=ok, size_of=big)
+    check("fuente debil dentro de rango -> PASS", rep.rows[-1]["state"] == PASS)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_span=0.3,
+                                          expected_span_m=(1.15, 1.53), weak_source=True,
+                                          exists=ok, size_of=big)
+    check("fuente debil en span fuera de rango -> WARN tambien",
+          rep.rows[-1]["state"] == NOT_TESTED)
     rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_span=1.30,
                                           expected_span_m=(1.15, 1.53),
                                           exists=ok, size_of=big)
@@ -906,6 +928,31 @@ def test_motor_run():
                     s[0] == "orbit" for s in spies))
             finally:
                 motor_run.physics.check_physics = orig_ph
+
+            # Review 3 #4 through the real step_scale: weak golem size only warns.
+            real_scale = motor_run.scale_ref.require_scale_evidence
+            real_validate = motor_run.gltf_check.validate
+            motor_run.scale_ref.require_scale_evidence = lambda paths, **kw: \
+                motor_run.scale_ref.scale_evidence_report(
+                    1.80, paths, asset_height=1.5,
+                    expected_height_m=kw["expected_height_m"], weak_source=kw["weak_source"],
+                    exists=lambda p: True, size_of=lambda p: 9)
+            try:
+                glb_ok = gen("gk.py", "import os\nopen(os.path.join(os.environ["
+                                      "'MOTOR_OUT_DIR'], 'g.glb'), 'wb').write(b'g')\n")
+                motor_run.gltf_check.validate = lambda p, **k: {
+                    "file": "g.glb", "numErrors": 0, "numWarnings": 0,
+                    "numInfos": 0, "version": "t"}
+                ctx = go(glb_ok, "golem", "--motor-technique", "x",
+                         sidecar=exempt, approve=True)
+                check("golem de 1.5 m (rango debil 3.2-4.8): la corrida PASA con WARN",
+                      ctx["completed"] == ORDER)
+                check("... y el WARN + la fuente debil quedan como huecos",
+                      any(g.startswith("size WARN") for g in ctx["gaps"])
+                      and any("WEAK" in g for g in ctx["gaps"]), str(ctx["gaps"]))
+            finally:
+                motor_run.scale_ref.require_scale_evidence = real_scale
+                motor_run.gltf_check.validate = real_validate
 
             # glTF: a .glb written by the generator must be validated.
             glb_gen = gen("gl.py", "import os\nopen(os.path.join(os.environ["
@@ -1631,6 +1678,36 @@ def test_physics_pure():
                   rq("gato"))["questions"]))
 
 
+def test_size_sources_strength():
+    print("\nsize_ranges: explicit vs weak sources")
+    n_weak = 0
+    for name, d in router_knowledge.CATEGORIES.items():
+        for sr in d.get("size_ranges", []):
+            m = re.match(r"^(?:(game|gameart|gametools|memory):)?([^:#|]+):(\d+)(?:-(\d+))?\|(.+)$",
+                         sr["source"])
+            kind, rel, a, b, anchor = m.groups()
+            base = {None: ROOT, "game": GAME_REFS, "gameart": GAME_ART,
+                    "gametools": GAME_TOOLS, "memory": MEMORY}[kind]
+            lines = open(os.path.join(base, rel), encoding="utf-8").read().splitlines()
+            cited = [l for l in lines[int(a) - 1:int(b or a)] if anchor in l]
+            is_table_row = bool(cited) and cited[0].lstrip().startswith("|")
+            label = "%s/%s" % (name, sr["aliases"][0])
+            if sr.get("weak"):
+                n_weak += 1
+                check("%s: fuente DEBIL declarada, con basis que lo explica" % label,
+                      "WEAK" in sr["basis"] and not is_table_row)
+            else:
+                check("%s: fuente explicita = fila de una tabla de medidas" % label,
+                      is_table_row, str(cited[:1]))
+    check("control: el golem (mencion al pasar) esta marcado weak",
+          preflight_router.requirements("golem")["size_range"]["weak"] is True)
+    check("control: el lobo (tabla de medidas) NO es weak",
+          preflight_router.requirements("lobo")["size_range"]["weak"] is False)
+    check("hay al menos una fuente debil registrada y el detector la ve", n_weak >= 1)
+    check("el hueco del golem dice que el chequeo solo avisa",
+          any("only warns" in g for g in preflight_router.requirements("golem")["gaps"]))
+
+
 def test_glb_deliverable_router():
     print("\nrouter glb_deliverable")
     rq = preflight_router.requirements
@@ -1708,7 +1785,8 @@ def test_router_requirements():
           any("feline" in g for g in req["gaps"]))
     req = preflight_router.requirements("lobo")
     check("lobo trae el rango de altura CON fuente", req["size_range"]
-          == {"dim": "height", "range_m": (0.66, 0.84), "basis": ""})
+          == {"dim": "height", "range_m": (0.66, 0.84), "basis": "",
+                          "weak": False})
     check("gato NO inventa rango de altura (no hay fuente)",
           preflight_router.requirements("gato")["size_range"] is None)
     req = preflight_router.requirements("golem")
@@ -1749,6 +1827,7 @@ def main():
     test_mesh_and_gltf_pure()
     test_physics_pure()
     test_glb_deliverable_router()
+    test_size_sources_strength()
     test_motor_run()
     test_rubric()
     test_blender_suite()

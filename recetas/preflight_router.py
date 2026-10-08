@@ -329,7 +329,8 @@ def requirements(subject, rules=None):
             if any(_alias_pattern(a).search(low) for a in sr["aliases"]):
                 req["size_range"] = {"dim": sr["dim"],
                                      "range_m": tuple(sr["range_m"]),
-                                     "basis": sr.get("basis", "")}
+                                     "basis": sr.get("basis", ""),
+                                     "weak": bool(sr.get("weak"))}
     if req["physics"] is None:      # unknown subject: no family to relax anything
         req["physics"] = dict(PHYSICS_DEFAULT)
         req["physics_notes"].append("unknown subject: defaults, basis initial")
