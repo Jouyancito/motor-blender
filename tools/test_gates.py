@@ -322,6 +322,51 @@ def test_router():
     check("categoria desconocida es NOT_TESTED, no PASS",
           unknown.to_report().verdict() == NOT_TESTED)
 
+    # Step 2: fail closed on unknown (it used to return silently).
+    msg = expect_exit("sujeto sin categoria -> SystemExit (fail closed)",
+                      preflight_router.require_technique,
+                      "astrolabio de bronce", "cualquiera", verbose=False)
+    check("el error dice que no hay conocimiento y como salir",
+          "no knowledge registered" in msg and "allow_unknown=True" in msg
+          and "astrolabio" in msg)
+    expect_exit("allow_unknown sin razon -> SystemExit",
+                preflight_router.require_technique, "astrolabio de bronce",
+                "x", verbose=False, allow_unknown=True)
+    expect_no_exit("allow_unknown con razon pasa",
+                   preflight_router.require_technique, "astrolabio de bronce",
+                   "x", verbose=False, allow_unknown=True,
+                   reason="instrumento unico, sin familia que cosechar")
+    expect_exit("sujeto vacio -> SystemExit",
+                preflight_router.require_technique, "", "x", verbose=False)
+
+    # Step 2: aliases are whole words. Positive controls first, so the
+    # negatives below cannot be a blind regex.
+    check("control: 'wood door' resuelve material_procedural",
+          preflight_router.route("wood door").category == "material_procedural")
+    check("control: plural 'tortugas' resuelve",
+          preflight_router.route("dos tortugas").category == "quelonio")
+    check("control: slug 'wood_door' resuelve",
+          preflight_router.route("wood_door").category == "material_procedural")
+    check("control: acento 'caparazón' resuelve",
+          preflight_router.route("caparazón").category == "quelonio")
+    check("'woodpecker' NO resuelve a wood",
+          not preflight_router.route("woodpecker").matched)
+    check("'furniture' NO resuelve a fur (pelo)",
+          not preflight_router.route("furniture").matched)
+    check("'exporter' NO resuelve a export",
+          not preflight_router.route("exporter").matched)
+    expect_exit("woodpecker pasa a ser desconocido -> SystemExit",
+                preflight_router.require_technique, "woodpecker", "x",
+                verbose=False)
+
+    # Several families in one subject: the discarded set is the UNION.
+    both = preflight_router.route_all("pelo de la tortuga")
+    check("un sujeto con dos familias resuelve las dos",
+          {r.category for r in both} == {"pelo", "quelonio"})
+    expect_exit("tecnica descartada de la SEGUNDA familia tambien frena",
+                preflight_router.require_technique, "pelo de la tortuga",
+                "uv_sphere_painted", verbose=False)
+
 
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")

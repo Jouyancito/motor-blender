@@ -27,6 +27,9 @@
 #
 #     require_technique("pelo", "polygon_shells")   # -> SystemExit
 #     require_technique("pelo", "cards_alpha")      # -> ok
+#     require_technique("astrolabio", "x")          # -> SystemExit: unknown subject
+#     require_technique("astrolabio", "x", allow_unknown=True,
+#                       reason="instrumento unico")  # -> ok, said out loud
 #
 # EXTENDING IT
 # One entry per category, harvested from a real failure. Do not add speculative
@@ -34,6 +37,7 @@
 # lesson 8. Every `discarded` value must cite where the ruling lives.
 
 import os
+import re
 
 from recetas.verdict import Report, PASS, NOT_TESTED
 
@@ -171,35 +175,91 @@ class Rules:
         return r
 
 
-def route(text):
-    """Resolve a free-text description to its category rules."""
-    low = (text or "").lower()
+_FOLD = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
+
+
+def _norm(text):
+    return (text or "").translate(_FOLD).lower()
+
+
+def _alias_pattern(alias):
+    """Whole-word match, plural-tolerant. A bare substring test made
+    'woodpecker' resolve to 'wood' (material_procedural) and 'furniture' to
+    'fur' (pelo): wrong rules applied silently are worse than none. Underscore
+    counts as a separator so slugs like 'wood_door' still match."""
+    return re.compile(r"(?<![a-z0-9])%s(?:s|es)?(?![a-z0-9])"
+                      % re.escape(_norm(alias)))
+
+
+def route_all(text):
+    """Every category whose alias appears in `text` as a whole word, in order
+    of first appearance. [] when nothing matches."""
+    low = _norm(text)
+    hits = []
     for category, data in CATEGORIES.items():
+        first = None
         for alias in data["aliases"]:
-            if alias in low:
-                return Rules(text, category, data)
-    return Rules(text, None, None)
+            m = _alias_pattern(alias).search(low)
+            if m and (first is None or m.start() < first):
+                first = m.start()
+        if first is not None:
+            hits.append((first, category))
+    hits.sort()
+    return [Rules(text, c, CATEGORIES[c]) for _pos, c in hits]
 
 
-def require_technique(subject, technique, verbose=True):
+def route(text):
+    """Resolve a free-text description to its (first) category rules."""
+    rules = route_all(text)
+    return rules[0] if rules else Rules(text, None, None)
+
+
+def require_technique(subject, technique, verbose=True,
+                      allow_unknown=False, reason=""):
     """
-    Fail the build when the intended technique is one already ruled out.
+    Fail the build when the intended technique is one already ruled out, or when
+    the subject has no registered knowledge at all.
 
     This is preflight 0b with teeth. A warning would be read exactly as well as
     the contract was on 2026-08-22, which is to say not at all.
+
+    FAIL CLOSED ON UNKNOWN. This used to return silently for a subject with no
+    category, so a family nobody harvested passed the gate it was meant to face:
+    the absence of a rule read as the absence of a problem. Now an unknown
+    subject raises unless the caller states `allow_unknown=True` AND a `reason`
+    -- the same contract as verdict.NOT_APPLICABLE.
     """
-    rules = route(subject)
+    matches = route_all(subject)
     if verbose:
-        print(rules.render())
-    if not rules.matched:
-        return rules
+        if matches:
+            for rules in matches:
+                print(rules.render())
+        else:
+            print(Rules(subject, None, None).render())
+
+    if not matches:
+        if not allow_unknown:
+            raise SystemExit(
+                "\nSIN CONOCIMIENTO REGISTRADO para %r: no knowledge registered "
+                "for it.\nAdd a router entry (recetas/preflight_router.py, every "
+                "field cited to its source) or pass allow_unknown=True with a "
+                "reason.\nCategorias conocidas: %s\n"
+                % (subject, ", ".join(sorted(CATEGORIES))))
+        if not (reason or "").strip():
+            raise SystemExit(
+                "\nallow_unknown=True needs a reason (why is it safe to build %r "
+                "with no registered rules?). An unreasoned exemption is an "
+                "unchecked gate wearing a costume.\n" % subject)
+        print("  PREFLIGHT ROUTER -- %r allowed UNKNOWN: %s" % (subject, reason))
+        return Rules(subject, None, None)
 
     key = (technique or "").strip().lower().replace("-", "_").replace(" ", "_")
-    why = rules.data.get("discarded", {}).get(key)
-    if why:
-        raise SystemExit(
-            "\nTECNICA DESCARTADA: %r para %r (categoria %s)\n\n  %s\n\n"
-            "La tecnica establecida de la familia es: %s\n"
-            % (technique, subject, rules.category, why,
-               rules.data.get("established", "(sin registrar)")))
-    return rules
+    for rules in matches:
+        why = rules.data.get("discarded", {}).get(key)
+        if why:
+            raise SystemExit(
+                "\nTECNICA DESCARTADA: %r para %r (categoria %s)\n\n  %s\n\n"
+                "La tecnica establecida de la familia es: %s\n"
+                % (technique, subject, rules.category, why,
+                   rules.data.get("established", "(sin registrar)")))
+    return matches[0]
