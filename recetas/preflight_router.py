@@ -277,7 +277,7 @@ def requirements(subject, rules=None):
            "mannequin_exempt": [], "views": [], "use_size": None,
            "use_size_exempt": [], "structure": [], "declared_parts": [],
            "gaps": [], "size_range": None, "lessons": [],
-           "mesh": dict(MESH_DEFAULT), "physics": None, "physics_notes": []}
+           "mesh": dict(MESH_DEFAULT), "glb_required": [], "physics": None, "physics_notes": []}
     sizes = set()
     for r in rules:
         d = r.data
@@ -299,6 +299,8 @@ def requirements(subject, rules=None):
                                      list(d["moving_parts"])))
         elif d.get("moving_parts"):
             req["declared_parts"].extend(d["moving_parts"])
+        if d.get("glb_deliverable"):
+            req["glb_required"].append(r.category)
         mesh = d.get("mesh") or {}
         m = req["mesh"]
         m["needs_uv"] = m["needs_uv"] or bool(mesh.get("needs_uv"))

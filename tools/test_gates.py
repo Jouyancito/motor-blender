@@ -940,6 +940,43 @@ def test_motor_run():
             rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
             check("sin .glb el paso gltf es NOT_APPLICABLE con razon",
                   rows["gltf"] == NOT_APPLICABLE)
+            check("... y queda como HUECO abierto (review 3 #2)",
+                  "no glb exported - glTF not validated" in ctx["gaps"])
+            for subj in ("golem", "king slime", "avispa", "serpiente", "pajaro",
+                         "export glb"):
+                msg = expect_exit("sin .glb, la familia de %r (entregable GLB) -> FAIL" % subj,
+                                  go, ok_gen, subj, "--motor-technique", "x",
+                                  sidecar=exempt, approve=True)
+                check("... con mensaje 'no .glb was exported'", "no .glb was exported" in msg)
+            ctx = go(ok_gen, "gato gris", "--motor-technique", "x",
+                     sidecar=exempt, approve=True)
+            check("control: el gato (no exige GLB) sigue pasando sin .glb",
+                  ctx["completed"] == ORDER)
+            # declared export path (sidecar / CLI), outside out/ and gen dir
+            sub_gen = gen("sg.py", "import os\nos.makedirs(os.path.join(os.path.dirname("
+                                   "__file__), 'exp'), exist_ok=True)\n"
+                                   "open(os.path.join(os.path.dirname(__file__), 'exp', "
+                                   "'m.glb'), 'wb').write(b'g')\n")
+            seen = []
+            motor_run.gltf_check.validate = lambda p, **k: seen.append(p) or {
+                "file": "m.glb", "numErrors": 0, "numWarnings": 0, "numInfos": 0,
+                "version": "t"}
+            try:
+                ctx = go(sub_gen, "golem", "--motor-technique", "x",
+                         sidecar=dict(exempt, export_glb=["exp/m.glb"]), approve=True)
+                check("export_glb declarado en el sidecar se valida (y el golem pasa)",
+                      seen and seen[0].endswith("exp/m.glb")
+                      and ctx["completed"] == ORDER, str(seen))
+                seen.clear()
+                ctx = go(sub_gen, "golem", "--motor-technique", "x",
+                         "--motor-export", "exp/m.glb", sidecar=exempt, approve=True)
+                check("--motor-export declarado por CLI se valida", bool(seen))
+                expect_exit("path declarado que el generador NO escribio -> FAIL",
+                            go, ok_gen, "gato gris", "--motor-technique", "x",
+                            "--motor-export", "exp/nada.glb", sidecar=exempt,
+                            approve=True)
+            finally:
+                motor_run.gltf_check.validate = orig_val
 
             # Mutations on the live STEPS must not pass.
             lam_steps = [(n, (lambda c: None) if n == "scale" else f)
@@ -1594,6 +1631,20 @@ def test_physics_pure():
                   rq("gato"))["questions"]))
 
 
+def test_glb_deliverable_router():
+    print("\nrouter glb_deliverable")
+    rq = preflight_router.requirements
+    for subj in ("golem", "slime", "avispa", "serpiente", "pajaro", "export glb"):
+        check("%r: el entregable es un GLB" % subj, bool(rq(subj)["glb_required"]))
+    for subj in ("gato", "tortuga", "carro", "roca", "pelo"):
+        check("%r: NO exige GLB (solo hueco si falta)" % subj,
+              not rq(subj)["glb_required"])
+    for name, d in router_knowledge.CATEGORIES.items():
+        if d.get("glb_deliverable"):
+            check("%s: glb_deliverable cita una fuente que resuelve" % name,
+                  resolve_pointer(d["glb_deliverable"])[0] == "ok")
+
+
 def test_blender_suite():
     print("\ntest_blender_gates.py (needs Blender)")
     blender = shutil.which("blender")
@@ -1697,6 +1748,7 @@ def main():
     test_router_requirements()
     test_mesh_and_gltf_pure()
     test_physics_pure()
+    test_glb_deliverable_router()
     test_motor_run()
     test_rubric()
     test_blender_suite()

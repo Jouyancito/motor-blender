@@ -67,18 +67,22 @@ def parse_args(argv):
         raise SystemExit("usage: motor_run.py -- <generator.py> \"<subject>\" "
                          "[--motor-out DIR] [--motor-technique KEY] "
                          "[--motor-allow-unknown REASON] [generator args...]")
-    opts = {"out": None, "technique": None, "allow_unknown": ""}
+    opts = {"out": None, "technique": None, "allow_unknown": "", "export": []}
     gen_args = []
     rest = argv[2:]
     i = 0
     while i < len(rest):
         a = rest[i]
         key = {"--motor-out": "out", "--motor-technique": "technique",
-               "--motor-allow-unknown": "allow_unknown"}.get(a)
+               "--motor-allow-unknown": "allow_unknown",
+               "--motor-export": "export"}.get(a)
         if key:
             if i + 1 >= len(rest):
                 raise SystemExit("%s needs a value" % a)
-            opts[key] = rest[i + 1]
+            if key == "export":
+                opts["export"].append(rest[i + 1])
+            else:
+                opts[key] = rest[i + 1]
             i += 2
         else:
             gen_args.append(a)
@@ -166,6 +170,11 @@ def make_ctx(argv):
     return {
         "generator": generator, "stem": stem, "subject": subject,
         "gen_args": gen_args, "sidecar": side, "out": out,
+        # Declared export paths (CLI or sidecar, relative to the generator dir):
+        # a generator that writes its GLB elsewhere is still validated.
+        "export_paths": [p if os.path.isabs(p) else os.path.join(
+            os.path.dirname(generator), p)
+            for p in list(opts["export"]) + list(side.get("export_glb", []))],
         "technique": opts["technique"] or side.get("technique") or "",
         # Only the registry's reason is ever used, never the requester's text.
         "allow_unknown": unknown_entry["reason"] if unknown_entry else "",
@@ -280,6 +289,9 @@ def _glb_snapshot(ctx):
                 path = os.path.join(d, name)
                 if name.lower().endswith(".glb") and os.path.isfile(path):
                     snap[path] = os.stat(path).st_mtime_ns
+    for path in ctx.get("export_paths", []):
+        if os.path.isfile(path):
+            snap[path] = os.stat(path).st_mtime_ns
     return snap
 
 
@@ -292,9 +304,24 @@ def _find_glbs(ctx):
 
 def step_gltf(ctx):
     glbs = _find_glbs(ctx)
+    missing = [p for p in ctx["export_paths"] if p not in glbs]
+    if missing:
+        raise SystemExit("motor_run: the generator declared export path(s) it did "
+                         "not write/update during this run: %s" % ", ".join(missing))
     if not glbs:
+        required = ctx["req"]["glb_required"]
+        if required:
+            raise SystemExit(
+                "motor_run: no .glb was exported, and the deliverable of family "
+                "%s IS a .glb (Godot ground truth, LECCIONES 9): glTF not "
+                "validated. Export it, or declare its path with --motor-export "
+                "or \"export_glb\" in the sidecar." % ", ".join(required))
+        gap = "no glb exported - glTF not validated"
+        ctx["gaps"].append(gap)
+        print("  [motor_run] OPEN GAP  %s" % gap)
         ctx["report"].add("gltf", NOT_APPLICABLE,
-                          reason="the generator wrote no .glb during this run")
+                          reason="the generator wrote no .glb during this run "
+                                 "(recorded as an open gap)")
         return
     results = {}
     bad = []

@@ -36,6 +36,8 @@
 #     gaps                 research holes declared instead of papered over
 #     size_ranges          [{"aliases": [...], "dim": "height"|"span", "range_m": (lo, hi),
 #                            "source": ptr, "basis": str?}]   span = widest horizontal extent
+#     glb_deliverable      pointer: the family's deliverable IS a .glb, so a run that
+#                          exports none FAILS (otherwise it only records a gap)
 #     creature             True for living/mob families (head-noun routing: a creature
 #                          modifier before an object head makes the subject ambiguous)
 
@@ -278,6 +280,7 @@ CATEGORIES = {
         "physics": {"stands": False, "drop_test": False, "islands": "skip", "interpenetration": "skip",
                     "reason": "governs the export step, not a family of bodies",
                     "source": "LECCIONES.md#9"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#9", "LECCIONES.md#14"],
         "sources": ["LECCIONES.md:124-133|ground truth", "LECCIONES.md:208-240|No medido"],
     },
@@ -551,6 +554,7 @@ CATEGORIES = {
         "physics": {"stands": True, "drop_test": True, "islands": "report", "interpenetration": "skip",
                     "reason": "bottom-weighted construct that stands; its stones are pressed ~40% embedded into the mass by design and a floating-segment variant exists",
                     "source": "game:golem/_synthesis.md:101-106|NUCLEO"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "game:golem/_synthesis.md:20-23|bottom-weighted",
@@ -603,6 +607,7 @@ CATEGORIES = {
         "physics": {"stands": True, "drop_test": False, "islands": "fail", "interpenetration": "report",
                     "reason": "squash-and-stretch lives in a Godot shader/tween, so a rigid drop of the mesh says nothing",
                     "source": "gameart:_bestiary_visual_bible.md:150|jiggle"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "gameart:_bestiary_visual_bible.md:96|Blob",
@@ -644,6 +649,7 @@ CATEGORIES = {
         "physics": {"stands": False, "drop_test": False, "islands": "fail", "interpenetration": "report",
                     "reason": "the wasp hovers: it floats above the origin ground plane by contract",
                     "source": "gametools:wasp/build_wasp.py:26|floats above"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "gameart:_bestiary_visual_bible.md:99|Artr",
@@ -681,6 +687,7 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "physics": {"stands": True, "drop_test": True, "islands": "fail", "interpenetration": "report",
                     "basis": "initial, uncalibrated: a limbless body lying on the ground; no family-specific source"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9", "LECCIONES.md#11"],
         "sources": [
             "gametools:snake/build_snake.py:1-8|limbless reptile",
@@ -740,6 +747,7 @@ CATEGORIES = {
         "physics": {"stands": False, "drop_test": False, "islands": "fail", "interpenetration": "report",
                     "reason": "the bird soars above the origin ground plane per brief, it does not stand",
                     "source": "gametools:bird_prey/build_bird.py:28|soars above"},
+        "glb_deliverable": "LECCIONES.md#9",
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "game:corvid/_synthesis.md:10-16|Envergadura",
