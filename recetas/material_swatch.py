@@ -47,7 +47,8 @@ import math
 import os
 import sys
 
-import bpy
+# `bpy` is imported inside the functions that need it, so assert_materials_vary
+# (pure arithmetic over stats) can be fixture-tested without Blender.
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from recetas.verdict import Report, PASS, FAIL, NOT_APPLICABLE
@@ -59,6 +60,7 @@ from recetas.verdict import Report, PASS, FAIL, NOT_APPLICABLE
 
 def _cube(name, x0, size, material):
     """Axis-aligned cube spanning `size` on X, Y and Z from (x0, 0, 0)."""
+    import bpy
     x1, y1, z1 = x0 + size, size, size
     verts = [
         (x0, 0.0, 0.0), (x1, 0.0, 0.0), (x1, y1, 0.0), (x0, y1, 0.0),
@@ -78,7 +80,7 @@ def _cube(name, x0, size, material):
 
 def render_swatches(materials, out_path, size=4.0, samples=64,
                     gap=0.4, res_per_swatch=320, height=460,
-                    world_strength=3.0):
+                    world_strength=3.0, color_depth='16'):
     """
     Render one cube per material under even light and report per-swatch stats.
 
@@ -90,6 +92,8 @@ def render_swatches(materials, out_path, size=4.0, samples=64,
     whose texture is keyed to world position will therefore read here the same
     way it reads in the beauty render.
     """
+    import bpy
+
     names = list(materials.keys())
     for i, key in enumerate(names):
         _cube(f"swatch_{key}", i * (size + gap), size, materials[key])
@@ -122,6 +126,13 @@ def render_swatches(materials, out_path, size=4.0, samples=64,
     scene.render.resolution_percentage = 100
     scene.render.filepath = out_path
     scene.render.image_settings.file_format = 'PNG'
+    # 16-bit, not the 8-bit default: one 8-bit code step is 0.0003-0.0037 in
+    # this luminance (REVIEW_FABLE D5), the same size as the whole calibration
+    # band, so an 8-bit probe can only answer "same byte or not".
+    scene.render.image_settings.color_depth = color_depth
+    # Default dither (1.0) injects LSB-scale noise into exactly the flat surfaces
+    # this probe must read as flat.
+    scene.render.dither_intensity = 0.0
     # Standard, not Filmic: a tone curve compresses the highlights and can make
     # a varying material look flatter than it is. The probe must be linear-ish.
     scene.view_settings.view_transform = 'Standard'
@@ -153,6 +164,7 @@ def _measure(png_path, names, res_per_swatch, height, margin=0.14, step=2):
     mean) keeps the hard edges BETWEEN faces from carrying the score -- those
     are a handful of pixels, and a mean would let them fake a pass.
     """
+    import bpy
     import numpy as np
 
     img = bpy.data.images.load(png_path, check_existing=False)
@@ -183,7 +195,36 @@ def _measure(png_path, names, res_per_swatch, height, margin=0.14, step=2):
     return stats
 
 
-def assert_materials_vary(stats, min_detail=0.00010, exempt=None):
+# Instrument floor, measured 2026-10-08 with tools/measure_swatch_floor.py
+# (Blender 5.1.2, Cycles 64 spl + denoise, 16-bit PNG, dither off, synthetic
+# Noise albedo of known amplitude on cube swatches). `detail` is now in LINEAR
+# float luminance (a 16-bit PNG loads as float and is sRGB-decoded; the old
+# 8-bit load returned the sRGB-ENCODED byte values, so the two scales differ and
+# the pre-2026-10 calibration table is not comparable):
+#
+#     CONTROL_flat (uniform)  ........ 0.00004   <- the instrument floor
+#     albedo swing +-0.2 % ........... 0.00005
+#     albedo swing +-0.5 % ........... 0.00006
+#     albedo swing +-1 % ............. 0.00008
+#     albedo swing +-3 % ............. 0.00021
+#     albedo swing +-10 % ............ 0.00064
+#
+# The SAME probe through the old 8-bit path read 0.00000 for every row up to
+# +-10 % once dither was off: an 8-bit code step is 0.0003-0.0037 in this
+# luminance, so the old threshold (0.00010) could only ask "same byte or not",
+# and the "real material" readings of 0.00028-0.00364 were dither plus
+# quantization (REVIEW_FABLE_2026-09-08 D5). The default sits at 3x the control
+# floor, between the +-1 % row (fails) and the +-3 % row (passes): it rejects a
+# material whose albedo moves by less than roughly 1.5 %.
+#
+# NOT re-measured: the four village materials (slab/floor/wood/column). Their
+# old numbers are in the other scale; re-run them through render_swatches and
+# check they land above MIN_DETAIL_DEFAULT before trusting this gate on them.
+MIN_DETAIL_DEFAULT = 0.00012
+INSTRUMENT_FLOOR = 0.00004
+
+
+def assert_materials_vary(stats, min_detail=MIN_DETAIL_DEFAULT, exempt=None):
     """
     Fail the build when a material renders flat over real 3D geometry.
 
@@ -194,21 +235,9 @@ def assert_materials_vary(stats, min_detail=0.00010, exempt=None):
     Gates on `detail`, NOT `stddev` -- see _measure() for why stddev is
     inverted on cube swatches and silently passes flat materials.
 
-    Threshold in 0-1 luminance. Calibrated on the harvest case, measured:
-
-        CONTROL_flat (uniform, no texture) .... 0.00000
-        slab (weakest real texture) ........... 0.00028
-        floor ................................. 0.00083
-        wood .................................. 0.00112
-        column (strongest) .................... 0.00364
-
-    The default sits at 0.00010 -- below the weakest REAL material by ~3x and
-    above the uniform control. The band is narrower than it looks because
-    denoising is ON for the probe: the denoiser flattens sampling noise to
-    exactly zero on a uniform surface (which is what makes the control read
-    0.00000) while preserving genuine texture. Turning denoising off does NOT
-    widen the margin -- it raises the floor for everything, since Cycles noise
-    is itself high-frequency.
+    Threshold in linear 0-1 luminance; calibration table and its provenance are
+    in the comment above MIN_DETAIL_DEFAULT. A `min_detail` at or below
+    INSTRUMENT_FLOOR is refused: it would pass the flat control.
 
     `exempt` is a dict {material_name: reason}, NOT a list. Four external
     reviewers (2026-09-02) flagged the original bare tuple as lesson 8 waiting
@@ -220,6 +249,11 @@ def assert_materials_vary(stats, min_detail=0.00010, exempt=None):
     Returns a Report, so an exempted material shows as NOT_APPLICABLE with its
     reason rather than vanishing from the output.
     """
+    if min_detail <= INSTRUMENT_FLOOR:
+        raise SystemExit(
+            "assert_materials_vary: min_detail=%.5f is at or below the "
+            "instrument floor (%.5f): a flat control would pass." %
+            (min_detail, INSTRUMENT_FLOOR))
     if exempt is None:
         exempt = {}
     if not isinstance(exempt, dict):

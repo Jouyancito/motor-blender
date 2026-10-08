@@ -58,7 +58,10 @@ import re
 
 from recetas.verdict import Report, PASS, FAIL, NOT_TESTED
 
-SPEC_BASENAMES = ("_structure_spec.md", "_spec.md", "_motion_spec.md")
+# `_motion_spec.md` is deliberately NOT here: a motion spec is not a structure
+# spec, and accepting it guaranteed NOT_TESTED for the three folders that have
+# one (REVIEW_FABLE_2026-09-08 D7).
+SPEC_BASENAMES = ("_structure_spec.md", "_spec.md")
 REQUIRED_COLUMNS = ("plano", "angulo", "limite")
 
 # Accent-insensitive: Joan writes "Ángulo"/"Límite", ASCII creeps in from tools.
@@ -69,14 +72,39 @@ def _fold(text):
     return text.translate(_FOLD).strip().lower()
 
 
+def _has_structure_heading(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("#") and _fold(line).lstrip("# ").startswith(
+                        ("structure", "estructura")):
+                    return True
+    except (OSError, UnicodeDecodeError):
+        return False
+    return False
+
+
 def find_spec(ref_dir):
-    """Return the first spec file found under `ref_dir`, or None."""
+    """
+    Return the spec file for `ref_dir`, or None.
+
+    1. A file named in SPEC_BASENAMES (priority order), anywhere under the dir.
+    2. Otherwise any *.md under the dir with a STRUCTURE/ESTRUCTURA heading --
+       the corpus keeps its research inside `_synthesis.md`, and a finder that
+       only knows file NAMES read that corpus as empty (D7).
+    """
     if not os.path.isdir(ref_dir):
         return None
+    mds = []
     for root, _dirs, files in os.walk(ref_dir):
         for base in SPEC_BASENAMES:
             if base in files:
                 return os.path.join(root, base)
+        mds.extend(os.path.join(root, f) for f in sorted(files)
+                   if f.lower().endswith(".md"))
+    for path in sorted(mds):
+        if _has_structure_heading(path):
+            return path
     return None
 
 
@@ -97,10 +125,12 @@ def parse_structure(spec_path):
 
     # Locate "## STRUCTURE" (or ESTRUCTURA) and read until the next heading.
     start = None
+    level = 0
     for i, line in enumerate(lines):
         if line.startswith("#") and _fold(line).lstrip("# ").startswith(
                 ("structure", "estructura")):
             start = i + 1
+            level = len(line) - len(line.lstrip("#"))
             break
     if start is None:
         return {}
@@ -108,11 +138,17 @@ def parse_structure(spec_path):
     rows = {}
     header_seen = False
     for line in lines[start:]:
-        if line.startswith("#"):
+        # Sub-headings (####) belong to the section; only a heading of the same
+        # or a higher level ends it. Stopping at the first "#" made a table
+        # under "#### Miembros" invisible (D7).
+        if line.startswith("#") and len(line) - len(line.lstrip("#")) <= level:
             break
         if not line.strip().startswith("|"):
             continue
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        # Rows of 3 columns (Parametro | Valor | Fuente) describe parameters, not
+        # parts: they carry no plane/angle/limit triple, so they are skipped
+        # instead of being coerced into one.
         if len(cells) < 4:
             continue
         folded = _fold(cells[0])

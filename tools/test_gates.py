@@ -28,6 +28,7 @@ from recetas.verdict import (Report, PASS, FAIL, NOT_TESTED,  # noqa: E402
                              NOT_APPLICABLE)
 from recetas import asset_spec                                # noqa: E402
 from recetas import preflight_router                          # noqa: E402
+from recetas import material_swatch                           # noqa: E402
 
 _results = []
 
@@ -169,6 +170,119 @@ def test_asset_spec():
                     verbose=False)
 
 
+NESTED_SYNTHESIS = """# turtle synthesis
+
+### ESTRUCTURA -- plano, angulo y limite por parte movil
+
+#### Miembros
+
+| Parametro | Valor | Fuente |
+|---|---|---|
+| UPPER_LIMB_PLANE | horizontal | JEB |
+
+| Parte | Plano | Angulo | Limite |
+|---|---|---|---|
+| humerus_L | horizontal | 0 deg | fuera del caparazon |
+
+### Otra seccion
+
+| Parte | Plano | Angulo | Limite |
+|---|---|---|---|
+| leaked_part | x | x | x |
+"""
+
+MOTION_ONLY = """# motion
+
+## Idle
+
+| Parte | Plano | Angulo | Limite |
+|---|---|---|---|
+| humerus_L | horizontal | 0 | fuera |
+"""
+
+
+def test_asset_spec_corpus_shapes():
+    """D7: the corpus keeps research in _synthesis.md, nested and 3-column."""
+    print("\nasset_spec.py -- corpus shapes (REVIEW_FABLE D7)")
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "_synthesis.md"), "w", encoding="utf-8") as fh:
+            fh.write(NESTED_SYNTHESIS)
+        check("find_spec cae a un .md con encabezado ESTRUCTURA",
+              asset_spec.find_spec(tmp) is not None)
+        rep = asset_spec.check_structure(tmp, ["humerus_L"])
+        check("tabla de 4 columnas bajo #### se lee", rep.verdict() == PASS)
+        rep = asset_spec.check_structure(tmp, ["UPPER_LIMB_PLANE"])
+        check("fila de 3 columnas (Parametro|Valor|Fuente) no es una parte",
+              rep.rows[0]["state"] == NOT_TESTED)
+        rep = asset_spec.check_structure(tmp, ["leaked_part"])
+        check("la seccion termina en el siguiente encabezado del mismo nivel",
+              rep.rows[0]["state"] == NOT_TESTED)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "motion"))
+        with open(os.path.join(tmp, "motion", "_motion_spec.md"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(MOTION_ONLY)
+        check("un _motion_spec.md sin seccion STRUCTURE no cuenta como spec",
+              asset_spec.find_spec(tmp) is None)
+        expect_exit("carpeta con solo movimiento -> SystemExit",
+                    asset_spec.require_structure, tmp, ["humerus_L"],
+                    verbose=False)
+
+    # The shipped quelonio spec: 6 researched parts pass; `tail` has no source
+    # row and must read as NOT researched, not as invented.
+    spec_dir = os.path.join(ROOT, "recetas", "specs", "quelonio")
+    parts = ["humerus_L", "humerus_R", "forearm_L", "forearm_R", "neck", "head"]
+    expect_no_exit("spec de tortuga del repo cubre sus 6 partes investigadas",
+                   asset_spec.require_structure, spec_dir, parts, verbose=False)
+    rep = asset_spec.check_structure(spec_dir, ["tail"])
+    check("tail sin fuente -> NOT_TESTED (no se inventa)",
+          rep.rows[0]["state"] == NOT_TESTED)
+
+
+# ---------------------------------------------------------------------------
+# material_swatch.py (pure part -- no Blender)
+# ---------------------------------------------------------------------------
+
+# Measured 2026-10-08, tools/measure_swatch_floor.py (see material_swatch.py).
+_FLOOR = 0.00004          # CONTROL_flat
+_SWING_1PCT = 0.00008     # +-1 % albedo: must read as flat
+_SWING_3PCT = 0.00021     # +-3 % albedo: must read as textured
+
+
+def _stats(detail):
+    return {"m": {"mean": 0.3, "stddev": 0.01, "detail": detail}}
+
+
+def test_material_swatch():
+    print("\nmaterial_swatch.py -- threshold vs measured instrument floor")
+    thr = material_swatch.MIN_DETAIL_DEFAULT
+    check("el umbral esta por encima del piso del instrumento (control)",
+          thr > _FLOOR * 2, "umbral %.5f piso %.5f" % (thr, _FLOOR))
+    expect_exit("el control plano medido FALLA el gate",
+                material_swatch.assert_materials_vary, _stats(_FLOOR))
+    expect_exit("variacion de +-1 % de albedo FALLA (invisible)",
+                material_swatch.assert_materials_vary, _stats(_SWING_1PCT))
+    expect_no_exit("variacion de +-3 % de albedo PASA",
+                   material_swatch.assert_materials_vary, _stats(_SWING_3PCT))
+    expect_exit("a caballo del umbral, justo debajo, falla",
+                material_swatch.assert_materials_vary, _stats(thr * 0.95))
+    expect_no_exit("a caballo del umbral, justo encima, pasa",
+                   material_swatch.assert_materials_vary, _stats(thr * 1.05))
+    expect_exit("umbral en el piso del instrumento es rechazado",
+                material_swatch.assert_materials_vary, _stats(_SWING_3PCT),
+                min_detail=_FLOOR)
+    expect_exit("exempt como lista es rechazado",
+                material_swatch.assert_materials_vary, _stats(_FLOOR),
+                exempt=["m"])
+    expect_exit("exempt como string es rechazado",
+                material_swatch.assert_materials_vary, _stats(_FLOOR),
+                exempt="m")
+    rep = material_swatch.assert_materials_vary(
+        _stats(_FLOOR), exempt={"m": "vidrio pulido, uniforme a proposito"})
+    check("exempt con razon queda NOT_APPLICABLE", rep.verdict() == PASS)
+
+
 # ---------------------------------------------------------------------------
 # preflight_router.py
 # ---------------------------------------------------------------------------
@@ -213,6 +327,8 @@ def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
     test_asset_spec()
+    test_asset_spec_corpus_shapes()
+    test_material_swatch()
     test_router()
 
     failed = [n for n, ok, _ in _results if not ok]
