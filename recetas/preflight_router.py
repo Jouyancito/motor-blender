@@ -41,87 +41,12 @@ import re
 
 from recetas.verdict import Report, PASS, NOT_TESTED
 
-# Category knowledge. `discarded` maps technique key -> why + where it is ruled.
-CATEGORIES = {
-    "pelo": {
-        "aliases": ["pelo", "hair", "cabello", "melena", "fur", "cabellera"],
-        "established": "cards con alpha, construidos DESDE los mechones",
-        "discarded": {
-            "polygon_shells": (
-                "una cascara offset del craneo es, geometricamente, un gorro. "
-                "Ruled out in _asset_creation_contract.md §402 -- y la carpeta "
-                "_references/hair_polygon_shells/ TODAVIA la recomienda, que es "
-                "por lo que se construyo dos veces el 2026-08-22"),
-            "offset_shell": "mismo defecto que polygon_shells",
-        },
-        "must_read": [
-            "art/_modeling_knowledge_base.md §pelo en 3 capas",
-            "art/_asset_creation_contract.md §402 (tecnicas DESCARTADAS)",
-        ],
-        "structural_note": (
-            "el pelo crece de foliculos, cae por gravedad, se peina en una "
-            "direccion y LOS MECHONES SE SOLAPAN: en una cabeza con pelo no se "
-            "ve el cuero cabelludo salvo en la raya"),
-    },
-    "quelonio": {
-        "aliases": ["tortuga", "turtle", "quelonio", "caparazon", "carapace"],
-        "established": "carapacho construido DESDE sus escudos (_carapace.py)",
-        "discarded": {
-            "uv_sphere_painted": (
-                "una esfera UV con escudos pintados encima tiene el edge flow "
-                "de una esfera: los bordes de placa cortan poligonos por la "
-                "mitad. LECCIONES.md leccion 6"),
-        },
-        "must_read": [
-            "~/motor-blender/LECCIONES.md leccion 5 (medida vs estructura)",
-            "_references/turtle/motion/_motion_spec.md",
-        ],
-        "structural_note": (
-            "postura ESPARRANCADA: humero en plano HORIZONTAL, antebrazo en "
-            "plano VERTICAL, codo en L y FUERA del caparazon -- por eso las "
-            "cuatro patas apuntan a cuadrantes distintos. El caparazon es "
-            "hueso: no deforma. Marcha lateral-sequence, NO trote diagonal"),
-        "moving_parts": ["humerus_L", "humerus_R", "forearm_L", "forearm_R",
-                         "neck", "head", "tail"],
-    },
-    "material_procedural": {
-        "aliases": ["material", "textura", "shader", "hormigon", "concrete",
-                    "madera", "wood", "procedural"],
-        "established": "FLOAT_COLOR horneado; nunca nodos de shader al exportar",
-        "discarded": {
-            "shader_nodes_export": (
-                "los nodos de shader NO sobreviven glTF y el exportador escribe "
-                "baseColorFactor blanco sin fallar: 6 criaturas blancas en Godot "
-                "durante un mes. LECCIONES.md leccion 9"),
-            "byte_color": (
-                "BYTE_COLOR aplica una conversion sRGB asimetrica: los colores "
-                "vuelven ~12x mas oscuros. Usar FLOAT_COLOR"),
-        },
-        "must_read": [
-            "~/motor-blender/recetas/material_swatch.py (gate de variacion)",
-            "~/motor-blender/LECCIONES.md leccion 12",
-        ],
-        "structural_note": (
-            "con coords Object la escala es CICLOS POR METRO, y una textura "
-            "bandeada sobre un eje que la superficie no recorre renderiza lisa "
-            "sin error"),
-    },
-    "export_godot": {
-        "aliases": ["glb", "gltf", "export", "godot", "exportar"],
-        "established": "truth render del GLB exportado (build_mob.py)",
-        "discarded": {
-            "showcase_del_generador": (
-                "el showcase renderiza CON el grafo de nodos que el .glb no "
-                "lleva. Ningun asset se aprueba desde el render del generador"),
-        },
-        "must_read": [
-            "art/_modeling_knowledge_base.md §gate de validacion pre-export",
-        ],
-        "structural_note": (
-            "un gate debe testear una PROPIEDAD DEL ARTEFACTO, no la existencia "
-            "de evidencia sobre el"),
-    },
-}
+# Category knowledge lives in recetas/router_knowledge.py (one entry per family,
+# every field cited to its source). Re-exported here so `preflight_router.CATEGORIES`
+# keeps working.
+from recetas.router_knowledge import CATEGORIES, UNIVERSAL_DISCARDED  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Rules:
@@ -162,6 +87,15 @@ class Rules:
                 out.append("    - %s" % doc)
         if d.get("moving_parts"):
             out.append("  PARTES MOVILES (4d): %s" % ", ".join(d["moving_parts"]))
+        if d.get("mannequin_m"):
+            out.append("  ESCALA (3):   maniqui de %.2f m en la escena, renders con el"
+                       % d["mannequin_m"])
+        elif d.get("mannequin_exempt"):
+            out.append("  ESCALA (3):   n/a -- %s" % d["mannequin_exempt"])
+        if d.get("required_views"):
+            out.append("  VISTAS (5):   %s" % ", ".join(d["required_views"]))
+        for gap in d.get("gaps", []):
+            out.append("  HUECO:        %s" % gap)
         return "\n".join(out) + "\n"
 
     def to_report(self):
@@ -237,6 +171,12 @@ def require_technique(subject, technique, verbose=True,
         else:
             print(Rules(subject, None, None).render())
 
+    key = (technique or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in UNIVERSAL_DISCARDED:
+        why, src = UNIVERSAL_DISCARDED[key]
+        raise SystemExit("\nTECNICA DESCARTADA (universal): %r\n\n  %s  [%s]\n"
+                         % (technique, why, src))
+
     if not matches:
         if not allow_unknown:
             raise SystemExit(
@@ -253,7 +193,6 @@ def require_technique(subject, technique, verbose=True,
         print("  PREFLIGHT ROUTER -- %r allowed UNKNOWN: %s" % (subject, reason))
         return Rules(subject, None, None)
 
-    key = (technique or "").strip().lower().replace("-", "_").replace(" ", "_")
     for rules in matches:
         why = rules.data.get("discarded", {}).get(key)
         if why:
@@ -263,3 +202,53 @@ def require_technique(subject, technique, verbose=True,
                 % (technique, subject, rules.category, why,
                    rules.data.get("established", "(sin registrar)")))
     return matches[0]
+
+
+def requirements(subject, rules=None):
+    """
+    Merge what every matched family demands into ONE dict for motor_run:
+
+        mannequin          True, or False with `mannequin_exempt` reasons
+        views              ordered union of required view labels
+        use_size           {"sizes": [...]} union, or None with `use_size_exempt`
+        structure          [(abs_ref_dir, [parts])] one per family with a spec
+        declared_parts     parts families declare but have no spec dir for
+        gaps               declared research holes of every matched family
+        height_range       sourced (lo, hi) for the asset, or None
+        lessons            lesson pointers of every matched family
+    """
+    rules = rules if rules is not None else route_all(subject)
+    low = _norm(subject)
+    req = {"categories": [r.category for r in rules], "mannequin": False,
+           "mannequin_exempt": [], "views": [], "use_size": None,
+           "use_size_exempt": [], "structure": [], "declared_parts": [],
+           "gaps": [], "height_range": None, "lessons": []}
+    sizes = set()
+    for r in rules:
+        d = r.data
+        if d.get("mannequin_m"):
+            req["mannequin"] = True
+        elif d.get("mannequin_exempt"):
+            req["mannequin_exempt"].append("%s: %s" % (r.category,
+                                                       d["mannequin_exempt"]))
+        for v in d.get("required_views", []):
+            if v not in req["views"]:
+                req["views"].append(v)
+        if d.get("use_size"):
+            sizes.update(d["use_size"]["sizes"])
+        elif d.get("use_size_exempt"):
+            req["use_size_exempt"].append("%s: %s" % (r.category,
+                                                      d["use_size_exempt"]))
+        if d.get("structure_spec") and d.get("moving_parts"):
+            req["structure"].append((os.path.join(REPO, d["structure_spec"]),
+                                     list(d["moving_parts"])))
+        elif d.get("moving_parts"):
+            req["declared_parts"].extend(d["moving_parts"])
+        req["gaps"].extend("%s: %s" % (r.category, g) for g in d.get("gaps", []))
+        req["lessons"].extend(d.get("lessons", []))
+        for sr in d.get("size_ranges", []):
+            if any(_alias_pattern(a).search(low) for a in sr["aliases"]):
+                req["height_range"] = tuple(sr["height_m"])
+    if sizes:
+        req["use_size"] = {"sizes": sorted(sizes, reverse=True)}
+    return req

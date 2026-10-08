@@ -358,6 +358,140 @@ def test_scale_ref_and_views():
 
 
 # ---------------------------------------------------------------------------
+# router_knowledge.py -- every entry complete, every citation resolvable
+# ---------------------------------------------------------------------------
+
+import re                                                    # noqa: E402
+from recetas import router_knowledge                         # noqa: E402
+
+GAME_REFS = os.path.expanduser(
+    "~/proyectos/Juego/DungeonParty-A/game/docs/art/_references")
+GAME_TOOLS = os.path.expanduser(
+    "~/proyectos/Juego/DungeonParty-A/game/tools/blender")
+MEMORY = os.path.expanduser(
+    "~/.claude/projects/-home-jouyan-proyectos/memory")
+_PTR = re.compile(r"^(?:(game|gametools|memory|game-doc):)?([^:#]+)"
+                  r"(?::(\d+)(?:-(\d+))?|#(\d+))?$")
+
+
+def resolve_pointer(ptr):
+    """
+    Returns (state, detail): "ok" | "bad" | "unchecked" (base dir absent or a
+    doc outside this machine's reach -- reported, never silently counted as ok).
+    """
+    m = _PTR.match(ptr)
+    if not m:
+        return "bad", "unparseable pointer %r" % ptr
+    kind, rel, a, b, lesson = m.groups()
+    base = {None: ROOT, "game": GAME_REFS, "gametools": GAME_TOOLS,
+            "memory": MEMORY}.get(kind)
+    if kind == "game-doc":
+        return "unchecked", "outside reach: %s" % ptr
+    if not os.path.isdir(base):
+        return "unchecked", "base dir missing for %r" % ptr
+    path = os.path.join(base, rel)
+    if not os.path.isfile(path):
+        return "bad", "no such file %s" % path
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    if lesson:
+        if any(l.startswith("## %s. " % lesson) for l in lines):
+            return "ok", ""
+        return "bad", "%s has no lesson %s" % (rel, lesson)
+    if a:
+        lo, hi = int(a), int(b or a)
+        if 1 <= lo <= hi <= len(lines):
+            return "ok", ""
+        return "bad", "%s:%d-%d outside the file (%d lines)" % (
+            rel, lo, hi, len(lines))
+    return "ok", ""
+
+
+def test_router_knowledge():
+    print("\nrouter_knowledge.py -- completeness and citations")
+
+    # Positive/negative controls for the pointer checker itself: a checker that
+    # cannot say "bad" would make every pointer below meaningless.
+    check("control: puntero bueno resuelve",
+          resolve_pointer("LECCIONES.md#6")[0] == "ok"
+          and resolve_pointer("CREATION_PROTOCOL.md:151-172")[0] == "ok")
+    check("control: leccion inexistente -> bad",
+          resolve_pointer("LECCIONES.md#99")[0] == "bad")
+    check("control: rango fuera del archivo -> bad",
+          resolve_pointer("LECCIONES.md:9990-9999")[0] == "bad")
+    check("control: archivo inexistente -> bad",
+          resolve_pointer("NOPE.md:1")[0] == "bad")
+
+    cats = router_knowledge.CATEGORIES
+    for needed in ("pelo", "quelonio", "material_procedural", "export_godot",
+                   "mamifero", "prop", "arquitectura", "bioma"):
+        check("existe la categoria %s" % needed, needed in cats)
+
+    n_ok = n_unchecked = 0
+    for name, d in cats.items():
+        miss = [f for f in ("aliases", "established", "discarded",
+                            "discarded_sources", "structural_note", "must_read",
+                            "required_views", "lessons", "sources") if not d.get(f)]
+        if "mannequin_m" not in d:
+            miss.append("mannequin_m")
+        check("%s: campos obligatorios" % name, not miss, "faltan %s" % miss)
+        check("%s: mannequin_m es 1.80 o trae razon" % name,
+              d["mannequin_m"] == 1.80
+              or (d["mannequin_m"] is None and d.get("mannequin_exempt")))
+        check("%s: use_size tiene sizes+basis o trae razon" % name,
+              (d.get("use_size") and d["use_size"].get("sizes")
+               and d["use_size"].get("basis"))
+              or (d.get("use_size") is None and d.get("use_size_exempt")))
+        try:
+            views.resolve_views(d["required_views"])
+            ok_views = True
+        except SystemExit:
+            ok_views = False
+        check("%s: required_views validas y con los angulos ingratos" % name,
+              ok_views)
+        check("%s: cada tecnica descartada cita su fuente" % name,
+              set(d["discarded"]) == set(d["discarded_sources"]))
+        ptrs = list(d["sources"]) + list(d["discarded_sources"].values()) \
+            + list(d["lessons"]) \
+            + [sr["source"] for sr in d.get("size_ranges", [])]
+        bad = []
+        for ptr in ptrs:
+            st, detail = resolve_pointer(ptr)
+            if st == "bad":
+                bad.append(detail)
+            elif st == "ok":
+                n_ok += 1
+            else:
+                n_unchecked += 1
+        check("%s: toda cita resuelve" % name, not bad, "; ".join(bad))
+        if d.get("structure_spec"):
+            check("%s: structure_spec existe" % name, os.path.isfile(
+                os.path.join(ROOT, d["structure_spec"], "_structure_spec.md")))
+    print("      citas verificadas: %d   sin verificar (fuera de alcance): %d"
+          % (n_ok, n_unchecked))
+    check("se verifico al menos una cita (el chequeo no esta ciego)", n_ok > 0)
+
+    for k, (why, src) in router_knowledge.UNIVERSAL_DISCARDED.items():
+        check("universal %s cita fuente que resuelve" % k,
+              resolve_pointer(src)[0] in ("ok", "unchecked"))
+
+    # Aliases must not be shared between families (ambiguous routing), and the
+    # detector must be able to see a collision.
+    def collisions(categories):
+        seen, dup = {}, []
+        for cname, cd in categories.items():
+            for al in cd["aliases"]:
+                if al in seen and seen[al] != cname:
+                    dup.append(al)
+                seen[al] = cname
+        return dup
+    check("control: el detector ve un alias repetido",
+          collisions({"a": {"aliases": ["x"]}, "b": {"aliases": ["x"]}}) == ["x"])
+    check("ningun alias esta en dos familias", not collisions(cats),
+          str(collisions(cats)))
+
+
+# ---------------------------------------------------------------------------
 # preflight_router.py
 # ---------------------------------------------------------------------------
 
@@ -442,6 +576,54 @@ def test_router():
                 "uv_sphere_painted", verbose=False)
 
 
+def test_router_requirements():
+    print("\npreflight_router.requirements()")
+    check("gato -> mamifero", preflight_router.route("gato gris").category
+          == "mamifero")
+    check("carro de la aldea -> prop y arquitectura",
+          {r.category for r in preflight_router.route_all("carro de la aldea")}
+          == {"prop", "arquitectura"})
+    check("pradera -> bioma", preflight_router.route("pradera").category
+          == "bioma")
+    check("gatito/'catapult' no son gato",
+          not preflight_router.route("catapult").matched)
+
+    expect_exit("tecnica universal (viewport screenshot) frena",
+                preflight_router.require_technique, "gato gris",
+                "viewport_screenshot_evidence", verbose=False)
+    expect_exit("tecnica universal frena tambien con allow_unknown",
+                preflight_router.require_technique, "astrolabio",
+                "single_view_judgement", verbose=False, allow_unknown=True,
+                reason="x")
+    expect_exit("tecnica descartada de mamifero frena",
+                preflight_router.require_technique, "gato", "copy_paste_sibling",
+                verbose=False)
+    expect_exit("tecnica descartada de bioma frena",
+                preflight_router.require_technique, "roca del bosque",
+                "noise_normal_displacement_rock", verbose=False)
+    expect_no_exit("tecnica no descartada de mamifero pasa",
+                   preflight_router.require_technique, "gato",
+                   "shape_keys_on_float_color_body", verbose=False)
+
+    req = preflight_router.requirements("gato gris")
+    check("gato exige maniqui y las 7 vistas", req["mannequin"]
+          and len(req["views"]) == 7)
+    check("gato declara el hueco de investigacion felina",
+          any("feline" in g for g in req["gaps"]))
+    req = preflight_router.requirements("lobo")
+    check("lobo trae el rango de altura CON fuente", req["height_range"]
+          == (0.66, 0.84))
+    check("gato NO inventa rango de altura (no hay fuente)",
+          preflight_router.requirements("gato")["height_range"] is None)
+    req = preflight_router.requirements("material de hormigon")
+    check("material: maniqui exento con razon, sin use_size",
+          not req["mannequin"] and req["mannequin_exempt"]
+          and req["use_size"] is None and req["use_size_exempt"])
+    req = preflight_router.requirements("tortuga")
+    check("tortuga arrastra su structure_spec y sus 7 partes",
+          req["structure"] and len(req["structure"][0][1]) == 7)
+
+
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
@@ -449,7 +631,9 @@ def main():
     test_asset_spec_corpus_shapes()
     test_material_swatch()
     test_scale_ref_and_views()
+    test_router_knowledge()
     test_router()
+    test_router_requirements()
 
     failed = [n for n, ok, _ in _results if not ok]
     print("\n" + "=" * 60)
