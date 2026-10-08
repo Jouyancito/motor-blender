@@ -480,7 +480,11 @@ def run(argv, steps=None):
                               _structure_rows(ctx["rules_all"]))
     doc = {"subject": ctx["subject"], "generator": ctx["generator"],
            "verdict": label, "gaps": ctx["gaps"], "measures": ctx["measures"],
-           "rows": report.rows, "evidence": ctx["evidence"], "rubric": rub}
+           "rows": report.rows, "evidence": ctx["evidence"], "rubric": rub,
+           # sha256 of every file a reviewer will judge; score_rubric re-hashes
+           # and refuses on mismatch. Only a run whose gates passed is scoreable.
+           "evidence_sha256": rubric.hash_evidence(ctx["evidence"]),
+           "scoreable": report.verdict() == PASS}
     doc["status"] = rubric.overall_status(doc)
     ctx["status"] = doc["status"]
     ctx["verdict_path"] = os.path.join(ctx["out"], "motor_verdict.json")

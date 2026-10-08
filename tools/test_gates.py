@@ -606,6 +606,14 @@ def _steps_order(source):
     return []
 
 
+def _raises(exc, fn, *a):
+    try:
+        fn(*a)
+    except exc:
+        return True
+    return False
+
+
 EXPECTED_FUNCS = {"technique": "step_technique", "structure": "step_structure",
                   "generator": "step_generator", "mesh": "step_mesh",
                   "gltf": "step_gltf", "physics": "step_physics",
@@ -833,6 +841,25 @@ def test_motor_run():
                   and vj["rubric"]["status"] == "PENDING"
                   and len(vj["rubric"]["dimensions"]) == 5
                   and len(vj["rubric"]["questions"]) > 5, str(vj.get("status")))
+            check("el verdict.json guarda sha256 de CADA evidencia y es puntuable",
+                  vj["scoreable"] is True and set(vj["evidence_sha256"]) == set(vj["evidence"])
+                  and all(len(h) == 64 for h in vj["evidence_sha256"].values()))
+            check("... y esos hashes coinciden con los archivos en disco",
+                  all(rubric_mod.sha256_file(p) == h
+                      for p, h in vj["evidence_sha256"].items()))
+            check("... y apply_review sobre ese verdict real lo acepta",
+                  rubric_mod.apply_review(
+                      vj, "Joan",
+                      {k: (4, "") for k in vj["rubric"]["dimensions"]},
+                      {q["id"]: ("yes", "") for q in vj["rubric"]["questions"]})
+                  == "PASS_WITH_GAPS")
+            check("... y un verdict real con un render alterado se rechaza", (
+                lambda: (open(vj["evidence"][0], "ab").write(b"x"),
+                         _raises(rubric_mod.RubricError, rubric_mod.apply_review,
+                                 json.load(open(os.path.join(out, "motor_verdict.json"))),
+                                 "Joan", {}, {}))[1])())
+            check("... y un verdict real con gates NOT_TESTED nunca es puntuable",
+                  rubric_mod.overall_status(dict(vj, verdict="NOT_TESTED")) == "FAIL")
             check("... y los huecos nombran la exencion y la altura sin fuente",
                   any("structure exempt" in g for g in vj["gaps"])
                   and any("size range" in g for g in vj["gaps"]))
@@ -1264,6 +1291,7 @@ def test_rubric():
 
         def doc(**kw):
             d = {"verdict": "PASS", "gaps": [], "evidence": [ev],
+                 "evidence_sha256": {ev: R.sha256_file(ev)},
                  "rubric": R.build_rubric("tortuga", rules, req, rows)}
             d.update(kw)
             d["status"] = R.overall_status(d)
@@ -1279,6 +1307,14 @@ def test_rubric():
               R.overall_status({"verdict": "PASS"}) == "EVIDENCE_READY")
         check("gates FAIL domina todo",
               R.overall_status(dict(doc(), verdict="FAIL")) == "FAIL")
+
+        # Review 3 #1(a): the reviewer's exact repro. A NOT_TESTED gate verdict
+        # used to be scoreable to PASS_WITH_GAPS with rc 0.
+        for gv in ("NOT_TESTED", "FAIL", "", "WHATEVER"):
+            check("overall_status con gates %r -> FAIL (nunca puntuable)" % gv,
+                  R.overall_status(dict(doc(), verdict=gv)) == "FAIL")
+        check("overall_status sin clave verdict -> FAIL",
+              R.overall_status({"rubric": doc()["rubric"], "evidence": [ev]}) == "FAIL")
 
         def full(d, score=4, ans="yes"):
             sc = {k: (score, "ok" if score < 3 else "") for k in d["rubric"]["dimensions"]}
@@ -1327,9 +1363,90 @@ def test_rubric():
                 check("rechaza %s" % label, False, "lo acepto")
             except R.RubricError:
                 check("rechaza %s" % label, True)
+        # (a)(b) apply_review refuses a non-scoreable verdict and leaves it intact.
+        nt = doc(verdict="NOT_TESTED")
+        before = json.dumps(nt, sort_keys=True)
+        try:
+            R.apply_review(nt, "Joan", *full(nt))
+            check("apply_review rechaza gates NOT_TESTED (repro del revisor)", False)
+        except R.RubricError as exc:
+            check("apply_review rechaza gates NOT_TESTED (repro del revisor)",
+                  "not scoreable" in str(exc))
+        check("... y la verdad rechazada no se modifica",
+              json.dumps(nt, sort_keys=True) == before and nt["status"] == "FAIL")
+        # (c) hashes
+        d = doc()
+        open(ev, "wb").write(b"OTRA COSA")
+        try:
+            R.apply_review(d, "Joan", *full(d))
+            check("evidencia cambiada tras el veredicto -> rechazada", False)
+        except R.RubricError as exc:
+            check("evidencia cambiada tras el veredicto -> rechazada",
+                  "sha256 mismatch" in str(exc))
+        open(ev, "wb").write(b"x")
+        d = doc()
+        del d["evidence_sha256"]
+        try:
+            R.apply_review(d, "Joan", *full(d))
+            check("verdict sin evidence_sha256 -> rechazado", False)
+        except R.RubricError:
+            check("verdict sin evidence_sha256 -> rechazado", True)
+        d = doc()
+        d["evidence_sha256"][ev] = "0" * 64
+        try:
+            R.apply_review(d, "Joan", *full(d))
+            check("hash registrado distinto -> rechazado", False)
+        except R.RubricError:
+            check("hash registrado distinto -> rechazado", True)
+        # (e) who/when/what was reviewed
+        d = doc()
+        R.apply_review(d, "cualquiera", *full(d))
+        check("se registran revisor, timestamp UTC y los hashes revisados",
+              d["rubric"]["reviewer"] == "cualquiera"
+              and "T" in d["rubric"]["reviewed_at"]
+              and d["rubric"]["reviewed_sha256"] == {ev: R.sha256_file(ev)})
+        # (d) na abuse
+        d = doc()
+        sc, an = full(d)
+        an = {k: ("na", "no aplica a este sujeto en absoluto") for k in an}
+        try:
+            R.apply_review(d, "Joan", sc, an)
+            check("TODAS las preguntas na -> rechazado", False)
+        except R.RubricError as exc:
+            check("TODAS las preguntas na -> rechazado", "every question" in str(exc))
+        check("... y el verdict quedo intacto (sigue EVIDENCE_READY)",
+              d["status"] == "EVIDENCE_READY" and d["rubric"]["reviewer"] is None)
+        d = doc()
+        sc, an = full(d)
+        qid0 = d["rubric"]["questions"][0]["id"]
+        an[qid0] = ("na", "corto")
+        try:
+            R.apply_review(d, "Joan", sc, an)
+            check("na con nota corta -> rechazado", False)
+        except R.RubricError as exc:
+            check("na con nota corta -> rechazado", "at least" in str(exc))
+        d = doc()
+        sc, an = full(d)
+        n = len(d["rubric"]["questions"])
+        k = int(n * R.NA_MAX_RATIO) + 1
+        for q in d["rubric"]["questions"][:k]:
+            an[q["id"]] = ("na", "esta pregunta no aplica por una razon concreta")
+        try:
+            R.apply_review(d, "Joan", sc, an)
+            check("na por encima del tope (%d/%d) -> rechazado" % (k, n), False)
+        except R.RubricError as exc:
+            check("na por encima del tope (%d/%d) -> rechazado" % (k, n),
+                  "cap" in str(exc))
+        d = doc()
+        sc, an = full(d)
+        an[qid0] = ("na", "esta pregunta no aplica por una razon concreta")
+        check("control: UN na con nota suficiente (bajo el tope) se acepta",
+              R.apply_review(d, "Joan", sc, an) == "PASS")
+        gone = doc()
+        gsc, gan = full(gone)
         os.remove(ev)
         try:
-            R.apply_review(doc(), "Joan", *full(doc()))
+            R.apply_review(gone, "Joan", gsc, gan)
             check("rechaza juzgar evidencia que ya no existe", False)
         except R.RubricError:
             check("rechaza juzgar evidencia que ya no existe", True)

@@ -23,7 +23,9 @@
 #
 # NO external AI API is called anywhere here. The reviewer is Joan or Claude
 # looking at the files named in `evidence`.
+import copy
 import datetime
+import hashlib
 import os
 
 DIMENSIONS = {
@@ -40,6 +42,12 @@ DIMENSIONS = {
     "prompt_fidelity": "Does it read as the requested subject ({subject!r}) at "
                        "the use size, next to the 1.80 m reference?",
 }
+
+# `na` is an escape hatch, so it is rationed (initial, uncalibrated): a note of
+# at least NA_NOTE_MIN characters each, and at most NA_MAX_RATIO of all questions.
+NA_NOTE_MIN = 15
+NA_MAX_RATIO = 0.25
+SCOREABLE_VERDICTS = ("PASS", "PASS_WITH_GAPS")
 
 PASS_MIN_SCORE = 3          # initial, uncalibrated: below this a dimension fails
 ANSWERS = ("yes", "no", "na")
@@ -164,7 +172,9 @@ def overall_status(verdict):
         PASS            gates + rubric passed
         PASS_WITH_GAPS  same, with declared gaps still open
     """
-    if verdict.get("verdict") == "FAIL":
+    # Only a run whose gates passed can ever be scored: a NOT_TESTED or FAIL gate
+    # verdict stays FAIL whatever a reviewer writes in the rubric.
+    if verdict.get("verdict") not in SCOREABLE_VERDICTS:
         return "FAIL"
     rub = verdict.get("rubric")
     if not rub:
@@ -199,32 +209,91 @@ def set_answer(rubric, qid, answer, note=""):
         raise RubricError("unknown question %r" % qid)
     if answer not in ANSWERS:
         raise RubricError("answer must be one of %s, got %r" % (ANSWERS, answer))
-    if answer in ("no", "na") and not note.strip():
-        raise RubricError("answer %r on %s needs a note" % (answer, qid))
+    if answer == "no" and not note.strip():
+        raise RubricError("answer 'no' on %s needs a note" % qid)
+    if answer == "na" and len(note.strip()) < NA_NOTE_MIN:
+        raise RubricError("answer 'na' on %s needs a note of at least %d characters "
+                          "saying why the question does not apply" % (qid, NA_NOTE_MIN))
     q.update(answer=answer, note=note)
 
 
-def apply_review(verdict, reviewer, scores=None, answers=None, today=None):
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def hash_evidence(paths):
+    """{path: sha256} -- stored in the verdict when it is written."""
+    return {p: sha256_file(p) for p in paths}
+
+
+def check_evidence(verdict):
+    """Re-hash the evidence the reviewer is about to judge; refuse on any
+    missing file or digest mismatch (the renders were replaced after the verdict)."""
+    hashes = verdict.get("evidence_sha256")
+    if not verdict.get("evidence") or not hashes:
+        raise RubricError("this verdict names no hashed evidence to judge")
+    if set(hashes) != set(verdict["evidence"]):
+        raise RubricError("evidence list and evidence_sha256 disagree")
+    out = {}
+    for p, want in hashes.items():
+        if not os.path.isfile(p):
+            raise RubricError("the evidence this rubric judges is gone: %s"
+                              % os.path.basename(p))
+        got = sha256_file(p)
+        if got != want:
+            raise RubricError("evidence %s changed since the verdict was written "
+                              "(sha256 mismatch): re-run motor_run" % os.path.basename(p))
+        out[p] = got
+    return out
+
+
+def na_problem(rubric):
+    """None, or why the `na` answers are abusive (all-na, or over the cap)."""
+    qs = rubric["questions"]
+    na = [q for q in qs if q["answer"] == "na"]
+    if qs and len(na) == len(qs):
+        return "every question is answered 'na': that is not a review"
+    if qs and len(na) / len(qs) > NA_MAX_RATIO:
+        return ("%d of %d questions are 'na' (cap %.0f%%, initial)"
+                % (len(na), len(qs), 100 * NA_MAX_RATIO))
+    return None
+
+
+def apply_review(verdict, reviewer, scores=None, answers=None, today=None, now=None):
     """
-    Apply {dim: (score, note)} and {qid: (answer, note)} to a verdict dict, refuse
-    if the evidence files it names are gone, recompute statuses. Returns the
-    overall status.
+    Apply {dim: (score, note)} and {qid: (answer, note)} to a verdict dict,
+    refuse unless the gates passed and the evidence still hashes to what the
+    verdict recorded, recompute statuses, and record who/when/which hashes.
+    The verdict is only modified when the whole review is accepted.
+    Returns the overall status.
     """
     if not reviewer or not reviewer.strip():
         raise RubricError("a reviewer name is required (who looked?)")
-    missing = [p for p in verdict.get("evidence", []) if not os.path.isfile(p)]
-    if missing:
-        raise RubricError("the evidence this rubric judges is gone: %s"
-                          % ", ".join(os.path.basename(m) for m in missing[:4]))
-    if not verdict.get("evidence"):
-        raise RubricError("this verdict names no evidence renders to judge")
-    rub = verdict["rubric"]
+    if verdict.get("verdict") not in SCOREABLE_VERDICTS:
+        raise RubricError("this verdict is not scoreable: its gates are %r "
+                          "(only %s can be reviewed)"
+                          % (verdict.get("verdict"), "/".join(SCOREABLE_VERDICTS)))
+    hashes = check_evidence(verdict)
+    work = copy.deepcopy(verdict)
+    rub = work["rubric"]
     for dim, (score, note) in (scores or {}).items():
         set_score(rub, dim, score, note)
     for qid, (ans, note) in (answers or {}).items():
         set_answer(rub, qid, ans, note)
+    problem = na_problem(rub)
+    if problem:
+        raise RubricError(problem)
+    stamp = now or datetime.datetime.now(datetime.timezone.utc)
     rub["reviewer"] = reviewer
-    rub["date"] = (today or datetime.date.today()).isoformat()
+    rub["date"] = (today or stamp.date()).isoformat()
+    rub["reviewed_at"] = stamp.isoformat()
+    rub["reviewed_sha256"] = hashes
     rub["status"] = rubric_status(rub)
-    verdict["status"] = overall_status(verdict)
+    work["status"] = overall_status(work)
+    verdict.clear()
+    verdict.update(work)
     return verdict["status"]
