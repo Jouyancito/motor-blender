@@ -1,0 +1,10 @@
+[
+  {
+    "generator": "recetas/gato/build_gato.py",
+    "subject": "gato gris",
+    "type": "structure_exempt",
+    "reason": "placeholder body (UV sphere + expression shape keys): it makes no anatomy claim. No feline reference research exists in the corpus (router gap for 'mamifero'), so there is nothing to put in a STRUCTURE table yet.",
+    "approved_by": "Joan",
+    "date": "2026-10-08"
+  }
+]

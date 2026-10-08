@@ -694,8 +694,26 @@ def test_motor_run():
         spies = []
         restore = _install_stubs(tmp, spies)
 
-        def go(generator, subject, *opts, sidecar=None, steps=None):
+        reg = os.path.join(tmp, "approved.json")
+        saved_reg = motor_run.REGISTRY_PATH
+        motor_run.REGISTRY_PATH = reg
+
+        def write_registry(entries):
+            with open(reg, "w", encoding="utf-8") as fh:
+                json.dump(entries, fh)
+
+        def entry(generator, subject, kind, **over):
+            e = {"generator": generator, "subject": subject, "type": kind,
+                 "reason": "approved: placeholder with no anatomy claim",
+                 "approved_by": "Joan", "date": "2026-10-08"}
+            e.update(over)
+            return e
+
+        def go(generator, subject, *opts, sidecar=None, steps=None,
+               approve=False, approvals=None):
             spies.clear()
+            write_registry(approvals if approvals is not None else (
+                [entry(generator, subject, "structure_exempt")] if approve else []))
             side = os.path.splitext(generator)[0] + ".motor.json"
             if sidecar is not None:
                 with open(side, "w", encoding="utf-8") as fh:
@@ -722,7 +740,7 @@ def test_motor_run():
             check("... ningun frenado temprano llego a orbitar ni a los gates",
                   spies == [])
 
-            ctx = go(ok_gen, "gato gris", "--motor-technique", "x", sidecar=exempt)
+            ctx = go(ok_gen, "gato gris", "--motor-technique", "x", sidecar=exempt, approve=True)
             check("STEPS reales: los 6 pasos corrieron y se registraron",
                   ctx["completed"] == ORDER, str(ctx["completed"]))
             gates = [s[0] for s in spies]
@@ -746,7 +764,7 @@ def test_motor_run():
                              ("RuntimeError", boom_gen)):
                 msg = ""
                 try:
-                    go(g, "gato gris", "--motor-technique", "x", sidecar=exempt)
+                    go(g, "gato gris", "--motor-technique", "x", sidecar=exempt, approve=True)
                 except (SystemExit, RuntimeError) as exc:
                     msg = str(exc)
                 check("generador con %s -> la corrida FALLA" % label, bool(msg))
@@ -761,13 +779,64 @@ def test_motor_run():
                          for n, f in motor_run.STEPS]
             expect_exit("mutacion: ('scale', lambda) -> la corrida falla",
                         go, ok_gen, "gato gris", "--motor-technique", "x",
-                        sidecar=exempt, steps=lam_steps)
+                        sidecar=exempt, approve=True, steps=lam_steps)
             noop_steps = [(n, (lambda c: None) if n == "use_size" else f)
                           for n, f in motor_run.STEPS]
             expect_exit("mutacion: ('use_size', lambda) -> la corrida falla",
                         go, ok_gen, "gato gris", "--motor-technique", "x",
-                        sidecar=exempt, steps=noop_steps)
+                        sidecar=exempt, approve=True, steps=noop_steps)
+
+            # Review #6: a generator cannot grant itself exemptions.
+            msg = expect_exit("sidecar con exencion SIN entrada en el registro -> FAIL",
+                              go, ok_gen, "gato gris", "--motor-technique", "x",
+                              sidecar=exempt)
+            check("... el mensaje manda a pedir aprobacion a Joan",
+                  "ask Joan" in msg)
+            check("... y el generador NO corrio", not any(
+                s[0] in ("orbit", "scale", "use_size") for s in spies))
+            expect_exit("entrada de OTRO sujeto no vale",
+                        go, ok_gen, "gato blanco", "--motor-technique", "x",
+                        sidecar=exempt,
+                        approvals=[entry(ok_gen, "gato gris", "structure_exempt")])
+            expect_exit("entrada de OTRO generador no vale",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar=exempt,
+                        approvals=[entry(exit0_gen, "gato gris", "structure_exempt")])
+            expect_exit("entrada de otro TIPO no vale (allow_unknown != structure)",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar=exempt,
+                        approvals=[entry(ok_gen, "gato gris", "allow_unknown")])
+            expect_exit("entrada sin approved_by -> registro malformado",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar=exempt,
+                        approvals=[entry(ok_gen, "gato gris", "structure_exempt",
+                                         approved_by="")])
+            expect_exit("sidecar asset_objects ya no se acepta",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar={"asset_objects": ["x"]})
+            expect_exit("--motor-allow-unknown sin entrada -> FAIL",
+                        go, ok_gen, "astrolabio", "--motor-technique", "x",
+                        "--motor-allow-unknown", "because")
+            expect_exit("allow_unknown en el sidecar sin entrada -> FAIL",
+                        go, ok_gen, "astrolabio", "--motor-technique", "x",
+                        sidecar={"allow_unknown": "because"})
+            # Approved unknown: still gets the mannequin, the 7 views, use_size.
+            ctx = go(ok_gen, "astrolabio", "--motor-technique", "x",
+                     "--motor-allow-unknown", "ignored text",
+                     approvals=[entry(ok_gen, "astrolabio", "allow_unknown"),
+                                entry(ok_gen, "astrolabio", "structure_exempt")])
+            check("unknown aprobado: la escala NO se salta (maniqui puesto)",
+                  ("mannequin", 1) in spies)
+            check("unknown aprobado: las 7 vistas", ("orbit", 7) in spies)
+            check("unknown aprobado: el gate de escala corre", any(
+                s[0] == "scale" for s in spies))
+            check("unknown aprobado: use_size por defecto", any(
+                s[0] == "use_size" for s in spies))
+            rows = {r["prop"]: r for r in ctx["report"].rows}
+            check("se usa la razon DEL REGISTRO, no la del pedido",
+                  "ignored text" not in json.dumps(ctx["report"].rows))
         finally:
+            motor_run.REGISTRY_PATH = saved_reg
             restore()
 
     # The first real client's sidecar must be valid against the live router.
@@ -780,6 +849,16 @@ def test_motor_run():
     with open(os.path.join(ROOT, "recetas", "gato", "build_gato.py"),
               encoding="utf-8") as fh:
         gsrc = fh.read()
+    reg_entries = motor_run.load_registry()
+    check("el registro real carga y valida", isinstance(reg_entries, list))
+    gato = [e for e in reg_entries
+            if e["generator"] == "recetas/gato/build_gato.py"
+            and e["subject"] == "gato gris" and e["type"] == "structure_exempt"]
+    check("la exencion del gato esta en el registro, aprobada por Joan",
+          len(gato) == 1 and gato[0]["approved_by"] == "Joan"
+          and gato[0]["date"] == "2026-10-08")
+    check("el sidecar del gato ya no se auto-exime",
+          "structure" not in side and "allow_unknown" not in side)
     check("build_gato no llama gates por su cuenta (los corre motor_run)",
           "require_technique" not in gsrc and "require_structure" not in gsrc)
 

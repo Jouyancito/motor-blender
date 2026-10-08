@@ -30,8 +30,10 @@
 # read BEFORE anything runs:
 #   {"technique": "key",
 #    "structure": {"ref_dir": "rel/or/abs", "moving_parts": ["a", "b"]}
-#              or {"exempt": "reason this build has no moving parts to research"},
-#    "asset_objects": ["Name", "Prefix*"]}
+#              or {"exempt": "..."}   <- only a REQUEST: honoured solely if
+#                                       recetas/approved_exemptions.json has an
+#                                       entry approved by Joan for this exact
+#                                       (generator, subject, type)}
 #
 # The output is NOT a visual verdict. It is a list of files to open and look at.
 import json
@@ -83,18 +85,82 @@ def load_sidecar(generator):
         return json.load(fh)
 
 
+# --------------------------------------------------------------- exemptions
+# A generator must NOT be able to grant itself an exemption: its sidecar may
+# only DECLARE what it wants, and motor_run honours it only if a human-approved
+# entry for exactly this (generator, subject, type) exists in the registry.
+REGISTRY_PATH = os.path.join(ROOT, "recetas", "approved_exemptions.json")
+EXEMPTION_TYPES = ("structure_exempt", "allow_unknown")
+_ENTRY_FIELDS = ("generator", "subject", "type", "reason", "approved_by", "date")
+
+
+def _norm_subject(text):
+    return " ".join((text or "").lower().split())
+
+
+def _rel_generator(generator):
+    rel = os.path.relpath(generator, ROOT)
+    return generator if rel.startswith("..") else rel.replace(os.sep, "/")
+
+
+def load_registry():
+    """Validated list of approved exemptions ([] when the file is absent)."""
+    if not os.path.isfile(REGISTRY_PATH):
+        return []
+    with open(REGISTRY_PATH, encoding="utf-8") as fh:
+        entries = json.load(fh)
+    for e in entries:
+        missing = [f for f in _ENTRY_FIELDS if not str(e.get(f, "")).strip()]
+        if missing or e["type"] not in EXEMPTION_TYPES or len(e["reason"]) < 20:
+            raise SystemExit("motor_run: malformed entry in %s (missing %s, type "
+                             "%r, reason >= 20 chars): %r"
+                             % (REGISTRY_PATH, missing, e.get("type"), e))
+    return entries
+
+
+def approved_exemption(generator, subject, kind):
+    for e in load_registry():
+        if (e["type"] == kind and e["generator"] == _rel_generator(generator)
+                and _norm_subject(e["subject"]) == _norm_subject(subject)):
+            return e
+    return None
+
+
+def _refuse_unapproved(generator, subject, kind):
+    raise SystemExit(
+        "motor_run: %s asks for a %r exemption for subject %r, but %s has no "
+        "approved entry for it.\nExemptions are not granted by the generator "
+        "or the command line: ask Joan for approval, then add an entry "
+        "{generator, subject, type, reason, approved_by, date}."
+        % (_rel_generator(generator), kind, subject, REGISTRY_PATH))
+
+
 def make_ctx(argv):
     generator, subject, opts, gen_args = parse_args(argv)
     if not os.path.isfile(generator):
         raise SystemExit("no such generator: %s" % generator)
     side = load_sidecar(generator)
+    if "asset_objects" in side:
+        raise SystemExit("motor_run: sidecar asset_objects is no longer "
+                         "supported: a generator cannot choose which of its "
+                         "meshes get judged. Every mesh is framed.")
+    asked_struct = bool(side.get("structure", {}).get("exempt"))
+    asked_unknown = bool(opts["allow_unknown"] or side.get("allow_unknown"))
+    struct_entry = approved_exemption(generator, subject, "structure_exempt")
+    unknown_entry = approved_exemption(generator, subject, "allow_unknown")
+    if asked_struct and not struct_entry:
+        _refuse_unapproved(generator, subject, "structure_exempt")
+    if asked_unknown and not unknown_entry:
+        _refuse_unapproved(generator, subject, "allow_unknown")
     stem = os.path.splitext(os.path.basename(generator))[0]
     out = os.path.abspath(opts["out"] or os.path.join(ROOT, "_out", stem))
     return {
         "generator": generator, "stem": stem, "subject": subject,
         "gen_args": gen_args, "sidecar": side, "out": out,
         "technique": opts["technique"] or side.get("technique") or "",
-        "allow_unknown": opts["allow_unknown"] or side.get("allow_unknown", ""),
+        # Only the registry's reason is ever used, never the requester's text.
+        "allow_unknown": unknown_entry["reason"] if unknown_entry else "",
+        "structure_exempt": struct_entry["reason"] if struct_entry else "",
         "report": Report("MOTOR_RUN %s :: %s" % (stem, subject)),
         "rules": None, "req": None, "evidence": [], "asset_objects": [],
     }
@@ -144,21 +210,20 @@ def step_structure(ctx):
         sub.add(part, FAIL, "family declares this moving part but has no "
                 "structure_spec to research it in")
         checked += 1
-    if side.get("exempt"):
-        sub.add("moving_parts", NOT_APPLICABLE, reason=side["exempt"])
+    exempt = ctx["structure_exempt"]
+    if exempt:
+        sub.add("moving_parts", NOT_APPLICABLE, reason=exempt)
     elif not checked:
         raise SystemExit(
             "motor_run: the generator declares no moving parts and no "
             "exemption. A part without a STRUCTURE row is researched first "
             "(preflight 4d); a build with none must say so with a reason: "
-            "{\"structure\": {\"exempt\": \"...\"}} in %s.motor.json"
-            % ctx["stem"])
+            "an APPROVED entry in recetas/approved_exemptions.json (ask Joan)")
     print(sub.render())
     if not sub.is_complete():
         raise SystemExit(sub.render() + "\nPREFLIGHT 4d SIN CUMPLIR (motor_run).\n")
-    state = NOT_APPLICABLE if side.get("exempt") and not checked else PASS
-    if state == NOT_APPLICABLE:
-        ctx["report"].add("structure", NOT_APPLICABLE, reason=side["exempt"])
+    if exempt and not checked:
+        ctx["report"].add("structure", NOT_APPLICABLE, reason=exempt)
     else:
         ctx["report"].add("structure", PASS, "%d part rows researched" % checked)
 
@@ -181,19 +246,12 @@ def step_generator(ctx):
 
 
 def _asset_objects(ctx):
+    """Every mesh except the mannequin: a generator cannot pick what is judged."""
     import bpy
-    names = ctx["sidecar"].get("asset_objects")
-    objs = []
-    for o in bpy.context.scene.objects:
-        if o.type != 'MESH' or o.name.startswith(scale_ref.NAME_PREFIX):
-            continue
-        if names is None or any(o.name == n or (n.endswith("*") and
-                                                o.name.startswith(n[:-1]))
-                                for n in names):
-            objs.append(o)
+    objs = [o for o in bpy.context.scene.objects
+            if o.type == 'MESH' and not o.name.startswith(scale_ref.NAME_PREFIX)]
     if not objs:
-        raise SystemExit("motor_run: the generator left no mesh to judge "
-                         "(asset_objects=%r)" % names)
+        raise SystemExit("motor_run: the generator left no mesh to judge")
     return objs
 
 
