@@ -24,6 +24,10 @@ subieron el éxito de otro agente 0/3→2/3) + outer loop de SceneCraft. Tier A.
 | `scale_ref.py` | UN maniqui de 1.80 m (antes copiado en village_gen y clown_gen) + `require_scale_evidence`: el build falla sin maniqui ni renders | village_gen destacamento, clown_gen, gato |
 | `views.py` | Set canonico de vistas (incluye las ingratas: perfil, bajo, cenital) + `orbit_capture` que verifica cada archivo en disco | gato via motor_run |
 | `../motor_run.py` | Entrada unica: technique > structure > generador > evidencia > escala > use_size; ningun generador salta un gate (fixture falla si se desconecta uno) | build_gato.py, primer cliente |
+| `mesh_quality.py` | Gate de malla (portado de la copia sin llamadores del juego): non-manifold, degeneradas, winding/normales, UV presente y solapada, presupuesto de tris; limites por familia | gato, wasp, snake via motor_run; fixtures en Blender |
+| `gltf_check.py` | Khronos glTF-Validator sobre el .glb del generador; falla RUIDOSO si el validador no esta instalado | 128 GLB del juego medidos: 105 limpios, 23 con 1 error |
+| `physics.py` | COM dentro del poligono de apoyo, drop/settle rigid-body (tilt, deriva), islas flotantes, interpenetracion BVH; politica por familia | gato (pasa), wasp (patas a 15-39 mm del cuerpo), snake (pasa) |
+| `rubric.py` | Rubrica visual (5 dimensiones + preguntas derivadas del router) que impide un PASS final hasta que alguien mira; `tools/score_rubric.py` la completa | verdict.json del gato |
 | `ribbon_tinta.py` | Línea de tinta paramétrica que cabalga el relieve (raycast + strip grosor constante) | sonrisa v3 (curva + comisuras) |
 | `nails_asentados.py` | Cuñas de queratina asentadas en puntas (uñas/garras), material mate | uñas de pies (close-up verificado) |
 | `bvh_glue.py` | Conformar/pegar un objeto a la superficie con offset proud por normal | mouth_lip re-glue |

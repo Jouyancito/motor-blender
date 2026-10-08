@@ -8,8 +8,8 @@
 # ("si una regla necesita que yo me acuerde de ir a buscarla, ya fallo").
 # So the order is fixed HERE, not in each generator:
 #
-#     technique -> structure -> GENERATOR -> mesh -> gltf -> evidence -> scale
-#     -> use_size
+#     technique -> structure -> GENERATOR -> mesh -> gltf -> physics -> evidence
+#     -> scale -> use_size
 #
 #   technique   preflight_router.require_technique  (unknown subject fails closed)
 #   structure   asset_spec.check_structure          (parts the generator declares)
@@ -18,6 +18,9 @@
 #               UV (where the family needs textures), tri budget (per family)
 #   gltf        gltf_check.validate: Khronos validator on any .glb the generator
 #               wrote (fails loudly if the validator is not installed)
+#   physics     physics.check_physics: COM inside the support polygon, rigid-body
+#               drop/settle (tilt, drift), floating islands, BVH interpenetration;
+#               per-family policy from router_knowledge `physics`
 #   evidence    mannequin (scale_ref) + orbit of the ungrateful angles (views)
 #   scale       scale_ref.require_scale_evidence
 #   use_size    use_size.require_use_size
@@ -51,8 +54,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from recetas import (asset_spec, gltf_check, mesh_quality, preflight_router,  # noqa: E402
-                     rubric, scale_ref, use_size, views)
+from recetas import (asset_spec, gltf_check, mesh_quality, physics,  # noqa: E402
+                     preflight_router, rubric, scale_ref, use_size, views)
 from recetas.verdict import Report, PASS, FAIL, NOT_APPLICABLE  # noqa: E402
 
 
@@ -242,7 +245,7 @@ def step_generator(ctx):
     os.environ["MOTOR_OUT_DIR"] = ctx["out"]
     sys.argv = [ctx["generator"], "--"] + ctx["gen_args"]
     t0 = time.time()
-    ctx["t_generator"] = t0   # only files written by THIS generator run
+    ctx["glb_before"] = _glb_snapshot(ctx)
     try:
         runpy.run_path(ctx["generator"], run_name="__main__")
     except SystemExit as exc:
@@ -268,17 +271,23 @@ def step_mesh(ctx):
                       % (len(assets), len(rep.rows) - n_na, n_na))
 
 
-def _find_glbs(ctx):
-    """GLBs written during this run: in the out dir or next to the generator."""
-    found = set()
+def _glb_snapshot(ctx):
+    """{path: mtime_ns} of every .glb in the out dir and next to the generator."""
+    snap = {}
     for d in {ctx["out"], os.path.dirname(ctx["generator"])}:
         if os.path.isdir(d):
             for name in os.listdir(d):
                 path = os.path.join(d, name)
-                if (name.lower().endswith(".glb") and os.path.isfile(path)
-                        and os.path.getmtime(path) >= ctx["t_generator"]):
-                    found.add(path)
-    return sorted(found)
+                if name.lower().endswith(".glb") and os.path.isfile(path):
+                    snap[path] = os.stat(path).st_mtime_ns
+    return snap
+
+
+def _find_glbs(ctx):
+    """GLBs the generator created or rewrote: a snapshot diff, not a clock
+    comparison (file mtimes use a coarse clock and can lag time.time())."""
+    before = ctx.get("glb_before", {})
+    return sorted(p for p, m in _glb_snapshot(ctx).items() if before.get(p) != m)
 
 
 def step_gltf(ctx):
@@ -300,6 +309,24 @@ def step_gltf(ctx):
     if bad:
         raise SystemExit("motor_run: glTF validation failed:\n  " + "\n  ".join(bad))
     ctx["report"].add("gltf", PASS, "%d .glb validated, 0 errors" % len(glbs))
+
+
+def step_physics(ctx):
+    assets = _asset_objects(ctx)
+    ctx["asset_objects"] = assets
+    cfg = ctx["req"]["physics"]
+    rep, measures = physics.check_physics(assets, cfg)
+    ctx["measures"]["physics"] = {"config": cfg, "measured": measures,
+                                  "notes": ctx["req"]["physics_notes"]}
+    for key in ("islands", "interpenetration"):
+        why = (measures.get(key) or {}).get("skipped_reason")
+        if why and "declared gap" in why:
+            ctx["gaps"].append("physics %s: %s" % (key, why))
+    if not rep.is_complete():
+        raise SystemExit(rep.render() + "\nPHYSICS GATE FAILED (motor_run).\n")
+    na = len([r for r in rep.rows if r["state"] == NOT_APPLICABLE])
+    ctx["report"].add("physics", PASS, "%d checks pass, %d n/a" %
+                      (len(rep.rows) - na, na))
 
 
 def _asset_objects(ctx):
@@ -398,6 +425,7 @@ STEPS = [
     ("generator", step_generator),
     ("mesh", step_mesh),
     ("gltf", step_gltf),
+    ("physics", step_physics),
     ("evidence", step_evidence),
     ("scale", step_scale),
     ("use_size", step_use_size),
@@ -407,7 +435,7 @@ STEPS = [
 # The report row each default step must leave behind: a step that returns
 # without recording a result did not run its gate.
 ROW_FOR = {"technique": "technique", "structure": "structure",
-           "generator": "generator", "mesh": "mesh", "gltf": "gltf",
+           "generator": "generator", "mesh": "mesh", "gltf": "gltf", "physics": "physics",
            "evidence": "views", "scale": "scale",
            "use_size": "use_size"}
 

@@ -19,7 +19,9 @@ sys.path.insert(0, ROOT)
 
 from recetas import mesh_quality as mq          # noqa: E402
 from recetas import gltf_check                   # noqa: E402
-from recetas.verdict import PASS, FAIL           # noqa: E402
+from recetas import physics as ph                # noqa: E402
+from recetas import router_knowledge as RK       # noqa: E402
+from recetas.verdict import PASS, FAIL, NOT_APPLICABLE as NA   # noqa: E402
 
 results = []
 
@@ -65,6 +67,38 @@ def rows(rep):
 def judged(ob, limits=None):
     rep, m = mq.check_mesh([ob], limits or {}, verbose=False)
     return rows(rep), m[ob.name]
+
+
+def box(name, size, center):
+    """Axis-aligned box (sx, sy, sz) centred at `center`, verts in world space."""
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    for v in bm.verts:
+        v.co.x = v.co.x * size[0] + center[0]
+        v.co.y = v.co.y * size[1] + center[1]
+        v.co.z = v.co.z * size[2] + center[2]
+    return obj_from(bm, name)
+
+
+def cone_tip_down(name):
+    """A cone balanced on its tip at z=0 (a stance with ONE contact point)."""
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.0,
+                          radius2=0.3, depth=0.6)
+    for v in bm.verts:
+        v.co.z += 0.3
+    return obj_from(bm, name)
+
+
+def cfg(**over):
+    c = dict(RK.PHYSICS_DEFAULT)
+    c.update(over)
+    return c
+
+
+def phys(objs, **over):
+    rep, m = ph.check_physics(objs, cfg(**over), verbose=False)
+    return {r["prop"]: r["state"] for r in rep.rows}, m
 
 
 def main():
@@ -178,6 +212,125 @@ def main():
         state, detail = gltf_check.judge(res)
         check("validador no instalado -> FAIL ruidoso, no pase silencioso",
               state == FAIL and "validator not installed" in detail, detail)
+
+    print("\nphysics.py (Blender)")
+    # 1. support polygon + ground contact
+    fresh()
+    st, m = phys([box("b", (1, 1, 1), (0, 0, 0.5))], drop_test=False)
+    check("control: cubo apoyado en z=0 -> contacto y COM dentro del poligono",
+          st["ground_contact"] == PASS and st["com_in_support"] == PASS
+          and abs(m["support_margin_m"] - 0.5) < 1e-3, (st, m))
+    check("control: el COM de un cubo 1x1x1 esta en su centro (volumen)",
+          all(abs(a - b) < 1e-4 for a, b in zip(m["com"], (0, 0, 0.5)))
+          and m["com_kind"] == "volume", m["com"])
+    fresh()
+    st, m = phys([box("b", (1, 1, 1), (0, 0, 0.8))], drop_test=False)
+    check("cubo FLOTANDO 0.3 m sobre el suelo -> ground_contact FAIL",
+          st["ground_contact"] == FAIL and abs(m["ground_gap_m"] - 0.3) < 1e-3, m)
+    fresh()
+    st, m = phys([box("b", (1, 1, 1), (0, 0, 0.2))], drop_test=False)
+    check("cubo HUNDIDO 0.3 m bajo el suelo -> ground_contact FAIL",
+          st["ground_contact"] == FAIL and m["ground_gap_m"] < -0.25, m)
+    fresh()
+    base = box("base", (0.2, 0.2, 0.2), (0, 0, 0.1))
+    top = box("top", (2.0, 2.0, 1.0), (1.2, 0, 0.7))       # heavy, hangs off to +x
+    top.data.update()
+    st, m = phys([base, top], drop_test=False, islands="skip", interpenetration="skip")
+    check("peso colgando fuera de la base -> COM fuera del poligono (FAIL)",
+          st["com_in_support"] == FAIL and m["support_margin_m"] < 0, m)
+    fresh()
+    st, m = phys([box("a", (1, 1, 1), (0, 0, 0.5)), box("b", (0.2, 0.2, 0.2), (3, 0, 0.1))],
+                 drop_test=False, islands="skip", interpenetration="skip")
+    check("control: dos apoyos separados en el suelo -> el hull los abarca y el COM cae dentro",
+          st["com_in_support"] == PASS and m["support_margin_m"] > 0
+          and m["support_contacts"] == 8 and m["support_hull_area_m2"] > 2.0, m)
+    fresh()
+    cone = cone_tip_down("cone")
+    st, m = phys([cone], drop_test=False)
+    check("cono sobre su punta: un solo contacto -> COM fuera de un hull sin area (FAIL)",
+          st["com_in_support"] == FAIL and m["support_hull_area_m2"] == 0.0
+          and m["support_contacts"] >= 1, m)
+
+    # 2. drop / settle
+    fresh()
+    st, m = phys([box("b", (1, 1, 1), (0, 0, 0.5))], drop_test=True,
+                 islands="skip", interpenetration="skip")
+    d = m["drop"]
+    check("control: un cubo soltado 5 cm queda quieto (tilt<1 deg, drift<2 cm)",
+          st["drop_settle"] == PASS and d["tilt_deg"] < 1.0 and d["drift_m"] < 0.02, d)
+    check("control: el cubo asienta con su cara inferior en z~0",
+          abs(d["rest_min_z"]) < 0.02, d)
+    fresh()
+    st, m = phys([cone_tip_down("cone")], drop_test=True, islands="skip",
+                 interpenetration="skip", stands=False)
+    d = m["drop"]
+    check("cono sobre su punta: la simulacion lo VUELCA (tilt > 15 deg -> FAIL)",
+          st["drop_settle"] == FAIL and d["tilt_deg"] > 15.0, d)
+    fresh()
+    keep = box("keep", (1, 1, 1), (0, 0, 0.5))
+    bpy.context.scene.frame_current = 7
+    ph.drop_measure([keep], 0.0, 0.05, 30)
+    check("el drop test restaura la escena (sin objetos temporales, frame, rigidbody)",
+          bpy.context.scene.frame_current == 7
+          and not [o for o in bpy.data.objects if o.name.startswith("__phys")]
+          and bpy.context.scene.rigidbody_world is None
+          and abs(keep.location.z) < 1e-9)
+
+    # 3. floating islands
+    fresh()
+    st, m = phys([box("body", (1, 1, 1), (0, 0, 0.5)),
+                  box("float", (0.2, 0.2, 0.2), (2, 0, 1.5))],
+                 drop_test=False, islands="fail", interpenetration="skip")
+    check("una pieza SUELTA en el aire -> floating_islands FAIL",
+          st["floating_islands"] == FAIL and m["islands"]["count"] == 1, m["islands"])
+    fresh()
+    st, m = phys([box("body", (1, 1, 1), (0, 0, 0.5)),
+                  box("cap", (0.4, 0.4, 0.2), (0, 0, 1.1))],
+                 drop_test=False, islands="fail", interpenetration="skip")
+    check("control: una pieza apoyada encima del cuerpo NO es isla",
+          st["floating_islands"] == PASS and m["islands"]["count"] == 0, m["islands"])
+    fresh()
+    st, m = phys([box("body", (1, 1, 1), (0, 0, 0.5)),
+                  box("pebble", (0.2, 0.2, 0.2), (3, 0, 0.1))],
+                 drop_test=False, islands="fail", interpenetration="skip")
+    check("control: una pieza separada pero APOYADA en el suelo no esta flotando",
+          st["floating_islands"] == PASS, m["islands"])
+    fresh()
+    st, m = phys([box("body", (1, 1, 1), (0, 0, 2.5)),
+                  box("pebble", (0.2, 0.2, 0.2), (3, 0, 0.1))],
+                 drop_test=False, islands="fail", interpenetration="skip", stands=False)
+    check("stands=False: apoyarse en el suelo NO salva a una pieza suelta de un volador",
+          st["floating_islands"] == FAIL and m["islands"]["count"] == 1
+          and st["ground_contact"] == NA, (st, m["islands"]))
+    fresh()
+    st, m = phys([box("body", (1, 1, 1), (0, 0, 0.5)),
+                  box("float", (0.2, 0.2, 0.2), (2, 0, 1.5))],
+                 drop_test=False, islands="report", interpenetration="skip")
+    check("islands='report': la isla se MIDE pero no falla",
+          st["floating_islands"] == PASS and m["islands"]["count"] == 1, m["islands"])
+
+    # 4. interpenetration
+    fresh()
+    st, m = phys([box("a", (1, 1, 1), (0, 0, 0.5)), box("b", (1, 1, 1), (0.5, 0, 0.5))],
+                 drop_test=False, islands="skip", interpenetration="fail")
+    check("dos cubos que se atraviesan -> interpenetration FAIL",
+          st["interpenetration"] == FAIL and m["interpenetration"]["pairs"] == 1
+          and m["interpenetration"]["triangle_pairs"] > 0, m["interpenetration"])
+    fresh()
+    st, m = phys([box("a", (1, 1, 1), (0, 0, 0.5)), box("b", (1, 1, 1), (3, 0, 0.5))],
+                 drop_test=False, islands="skip", interpenetration="fail")
+    check("control: cubos separados -> 0 pares",
+          st["interpenetration"] == PASS and m["interpenetration"]["pairs"] == 0)
+    fresh()
+    st, m = phys([box("a", (1, 1, 1), (0, 0, 0.5)), box("b", (1, 1, 1), (0.5, 0, 0.5))],
+                 drop_test=False, islands="skip", interpenetration="report")
+    check("interpenetration='report': se mide, no falla",
+          st["interpenetration"] == PASS and m["interpenetration"]["pairs"] == 1)
+    fresh()
+    st, m = phys([box("a", (1, 1, 1), (0, 0, 0.5))], drop_test=False, islands="skip",
+                 interpenetration="fail")
+    check("un solo objeto: nada que atravesar (NOT_APPLICABLE con razon)",
+          st["interpenetration"] == NA)
 
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))

@@ -33,6 +33,7 @@ from recetas import preflight_router                          # noqa: E402
 from recetas import material_swatch                           # noqa: E402
 from recetas import scale_ref                                 # noqa: E402
 from recetas import views                                     # noqa: E402
+from recetas import rubric as rubric_mod                      # noqa: E402
 
 _results = []
 
@@ -562,13 +563,14 @@ WIRING = {
     "step_generator": ["runpy.run_path"],
     "step_mesh": ["mesh_quality.check_mesh"],
     "step_gltf": ["gltf_check.validate", "gltf_check.judge"],
+    "step_physics": ["physics.check_physics"],
     "step_evidence": ["views.orbit_capture", "_place_mannequin",
                       "views.resolve_views"],
     "step_scale": ["scale_ref.require_scale_evidence"],
     "step_use_size": ["use_size.require_use_size"],
 }
-ORDER = ["technique", "structure", "generator", "mesh", "gltf", "evidence",
-         "scale", "use_size"]
+ORDER = ["technique", "structure", "generator", "mesh", "gltf", "physics",
+         "evidence", "scale", "use_size"]
 
 
 def _calls_by_function(source):
@@ -606,7 +608,8 @@ def _steps_order(source):
 
 EXPECTED_FUNCS = {"technique": "step_technique", "structure": "step_structure",
                   "generator": "step_generator", "mesh": "step_mesh",
-                  "gltf": "step_gltf", "evidence": "step_evidence",
+                  "gltf": "step_gltf", "physics": "step_physics",
+                  "evidence": "step_evidence",
                   "scale": "step_scale", "use_size": "step_use_size"}
 
 
@@ -683,6 +686,12 @@ def _install_stubs(tmp, spies):
         spies.append(("mesh", dict(limits)))
         return Report("MESH").add("x: nonmanifold_edges", PASS), {"stub": {}}
 
+    def physics_gate(objs, cfg, ground_z=0.0, verbose=True):
+        spies.append(("physics", dict(cfg)))
+        return (Report("PHYSICS").add("ground_contact", PASS),
+                {"com": [0, 0, 0.5], "islands": {"count": 0}})
+
+    patch(motor_run.physics, "check_physics", physics_gate)
     patch(motor_run.mesh_quality, "check_mesh", mesh_gate)
     patch(motor_run, "_asset_objects", lambda ctx: [_Obj()])
     patch(motor_run, "_place_mannequin", lambda a: spies.append(("mannequin", 1)) or [_Obj()])
@@ -794,9 +803,13 @@ def test_motor_run():
             check("STEPS reales: los 6 pasos corrieron y se registraron",
                   ctx["completed"] == ORDER, str(ctx["completed"]))
             gates = [s[0] for s in spies]
-            check("cada gate fue ALCANZADO (mesh, orbit, scale, use_size)",
-                  all(g in gates for g in ("mesh", "orbit", "scale", "use_size")),
-                  str(gates))
+            check("cada gate fue ALCANZADO (mesh, physics, orbit, scale, use_size)",
+                  all(g in gates for g in ("mesh", "physics", "orbit", "scale",
+                                           "use_size")), str(gates))
+            ph_cfg = [s[1] for s in spies if s[0] == "physics"][0]
+            check("el gate de physics recibe la politica de la familia (mamifero: se para, "
+                  "islas fail)", ph_cfg["stands"] and ph_cfg["islands"] == "fail"
+                  and ph_cfg["drop_test"], str(ph_cfg))
             mesh_lim = [s[1] for s in spies if s[0] == "mesh"][0]
             check("el gate de mesh recibe los limites de la familia (router)",
                   mesh_lim["max_nonmanifold"] == 0 and mesh_lim["needs_uv"] is False
@@ -807,7 +820,7 @@ def test_motor_run():
             check("el veredicto tiene una fila por paso",
                   all(rows.get(ROW) for ROW in ("technique", "structure",
                                                "generator", "mesh", "gltf",
-                                               "views", "scale",
+                                               "physics", "views", "scale",
                                                "use_size")), str(rows))
             check("la exencion queda NOT_APPLICABLE", rows["structure"] == NOT_APPLICABLE)
             with open(os.path.join(out, "motor_verdict.json"), encoding="utf-8") as fh:
@@ -854,6 +867,18 @@ def test_motor_run():
                     s[0] == "orbit" for s in spies))
             finally:
                 motor_run.mesh_quality.check_mesh = orig_check
+
+            orig_ph = motor_run.physics.check_physics
+            motor_run.physics.check_physics = lambda o, c, ground_z=0.0, verbose=True: (
+                Report("PHYSICS").add("com_in_support", FAIL, "tips over"), {})
+            try:
+                expect_exit("physics con FAIL -> la corrida falla",
+                            go, ok_gen, "gato gris", "--motor-technique", "x",
+                            sidecar=exempt, approve=True)
+                check("... y no llego a la evidencia (physics)", not any(
+                    s[0] == "orbit" for s in spies))
+            finally:
+                motor_run.physics.check_physics = orig_ph
 
             # glTF: a .glb written by the generator must be validated.
             glb_gen = gen("gl.py", "import os\nopen(os.path.join(os.environ["
@@ -1347,6 +1372,111 @@ def test_rubric():
                             "http://", "https://api")))
 
 
+def test_physics_pure():
+    print("\nphysics.py (pure geometry + judge, no Blender)")
+    from recetas import physics as PH
+    sq = [(0, 0), (1, 0), (1, 1), (0, 1), (0.5, 0.5), (0.2, 0.8)]
+    hull = PH.convex_hull_2d(sq)
+    check("hull: las 4 esquinas, interior descartado",
+          sorted(hull) == [(0, 0), (0, 1), (1, 0), (1, 1)], str(hull))
+    check("hull: area de un cuadrado unidad = 1", abs(PH.hull_area(hull) - 1) < 1e-9)
+    check("hull: puntos colineales -> sin area",
+          PH.hull_area(PH.convex_hull_2d([(0, 0), (1, 1), (2, 2)])) == 0.0)
+    check("hull: un solo punto", PH.convex_hull_2d([(3, 3)]) == [(3, 3)])
+    check("margen: centro del cuadrado = +0.5",
+          abs(PH.inside_margin((0.5, 0.5), hull) - 0.5) < 1e-9)
+    check("margen: punto fuera = negativo", PH.inside_margin((2.0, 0.5), hull) < 0
+          and abs(PH.inside_margin((2.0, 0.5), hull) + 1.0) < 1e-9)
+    check("margen: en el borde ~ 0", abs(PH.inside_margin((0.5, 0.0), hull)) < 1e-9)
+    check("margen: hull de un punto (cono sobre la punta) -> negativo, nunca dentro",
+          PH.inside_margin((0.0, 0.0), [(0.0, 0.0)]) <= 0.0
+          and PH.inside_margin((0.3, 0.0), [(0.0, 0.0)]) < 0)
+    check("margen: segmento (2 apoyos alineados) no tiene interior",
+          PH.inside_margin((0.5, 0.0), [(0, 0), (1, 0)]) <= 0.0)
+    check("angulo: vertical vs inclinado 90 deg",
+          abs(PH.angle_deg((0, 0, 1), (1, 0, 0)) - 90) < 1e-9
+          and PH.angle_deg((0, 0, 1), (0, 0, 2)) < 1e-6)
+
+    cfg = dict(router_knowledge.PHYSICS_DEFAULT)
+    good = {"ground_gap_m": 0.0, "support_margin_m": 0.3, "support_contacts": 8,
+            "drop": {"tilt_deg": 1.0, "drift_m": 0.01, "rest_min_z": 0.0, "frames": 60},
+            "islands": {"count": 0}, "interpenetration": {"pairs": 0, "triangle_pairs": 0}}
+    rep = PH.judge(good, cfg)
+    check("judge: asset estable -> completo y PASS", rep.is_complete()
+          and rep.verdict() == PASS, rep.render())
+    for label, mod in (
+            ("flotando", {"ground_gap_m": 0.5}), ("hundido", {"ground_gap_m": -0.5}),
+            ("COM fuera", {"support_margin_m": -0.1}),
+            ("vuelca", {"drop": {"tilt_deg": 40.0, "drift_m": 0.0, "rest_min_z": 0, "frames": 60}}),
+            ("deriva", {"drop": {"tilt_deg": 0.0, "drift_m": 2.0, "rest_min_z": 0, "frames": 60}}),
+            ("sin medir el suelo", {"ground_gap_m": None})):
+        check("judge: %s -> FAIL" % label,
+              PH.judge(dict(good, **mod), cfg).verdict() == FAIL)
+    isl = dict(good, islands={"count": 2, "details": ["a", "b"]})
+    check("judge: islas con politica fail -> FAIL",
+          PH.judge(isl, dict(cfg, islands="fail")).verdict() == FAIL)
+    check("judge: islas con politica report -> PASS (se informa)",
+          PH.judge(isl, dict(cfg, islands="report")).verdict() == PASS)
+    check("judge: islas con politica skip -> NOT_APPLICABLE",
+          [r for r in PH.judge(isl, dict(cfg, islands="skip")).rows
+           if r["prop"] == "floating_islands"][0]["state"] == NOT_APPLICABLE)
+    ip = dict(good, interpenetration={"pairs": 3, "triangle_pairs": 40})
+    check("judge: interpenetracion con politica fail -> FAIL",
+          PH.judge(ip, dict(cfg, interpenetration="fail")).verdict() == FAIL)
+    fly = dict(cfg, stands=False, drop_test=False, reason="hovers")
+    rep = PH.judge({"islands": {"count": 0}, "interpenetration": {"pairs": 0,
+                                                                 "triangle_pairs": 0}}, fly)
+    check("judge: volador (stands/drop False) -> sin medir suelo, completo",
+          rep.is_complete() and any(r["prop"] == "ground_contact"
+                                    and r["state"] == NOT_APPLICABLE for r in rep.rows),
+          rep.render())
+    capped = dict(good, islands={"count": 0, "skipped_reason": "N parts > cap (declared gap)"})
+    check("judge: analisis omitido por tope -> NOT_APPLICABLE con razon, no PASS mudo",
+          [r for r in PH.judge(capped, dict(cfg, islands="fail")).rows
+           if r["prop"] == "floating_islands"][0]["state"] == NOT_APPLICABLE)
+
+    # router policy schema
+    for name, d in router_knowledge.CATEGORIES.items():
+        p = dict(router_knowledge.PHYSICS_DEFAULT)
+        p.update(d.get("physics") or {})
+        check("%s: physics trae politica valida" % name,
+              d.get("physics") and p["islands"] in ("fail", "report", "skip")
+              and p["interpenetration"] in ("fail", "report", "skip")
+              and isinstance(p["stands"], bool) and isinstance(p["drop_test"], bool))
+        check("%s: physics cita razon o basis 'initial'" % name,
+              (d["physics"].get("reason") or "initial" in d["physics"].get("basis", ""))
+              and (not d["physics"].get("reason") or d["physics"].get("source")),
+              str(d["physics"]))
+        src = d["physics"].get("source")
+        if src:
+            check("%s: la fuente de physics resuelve" % name,
+                  resolve_pointer(src)[0] == "ok", src)
+    check("PHYSICS_DEFAULT cita fuente que resuelve y declara basis initial",
+          resolve_pointer(router_knowledge.PHYSICS_DEFAULT["source"])[0] == "ok"
+          and "initial" in router_knowledge.PHYSICS_DEFAULT["basis"])
+    rq = preflight_router.requirements
+    check("voladores (avispa, ave) NO se paran ni se dejan caer",
+          not rq("avispa")["physics"]["stands"] and not rq("pajaro")["physics"]["stands"]
+          and not rq("avispa")["physics"]["drop_test"])
+    check("golem/mamifero/prop se paran y se dejan caer",
+          all(rq(x)["physics"]["stands"] and rq(x)["physics"]["drop_test"]
+              for x in ("golem", "gato", "carro")))
+    check("slime se para pero no se deja caer (el squash es de Godot)",
+          rq("slime")["physics"]["stands"] and not rq("slime")["physics"]["drop_test"])
+    check("construct: sin interpenetracion (piedras embebidas por diseno)",
+          rq("golem")["physics"]["interpenetration"] == "skip")
+    check("sujeto desconocido -> politica por defecto (estricta en lo que mide)",
+          rq("astrolabio")["physics"]["stands"] and rq("astrolabio")["physics"]["drop_test"])
+    check("pelo: ni islas ni interpenetracion (las cards se solapan a proposito)",
+          rq("pelo")["physics"]["islands"] == "skip"
+          and rq("pelo")["physics"]["interpenetration"] == "skip")
+    check("el rubric deriva la pregunta de apoyo desde physics.stands",
+          any(q["source"].endswith(".physics.stands")
+              for q in rubric_mod.build_rubric(
+                  "gato", preflight_router.route_all("gato"),
+                  rq("gato"))["questions"]))
+
+
 def test_blender_suite():
     print("\ntest_blender_gates.py (needs Blender)")
     blender = shutil.which("blender")
@@ -1449,6 +1579,7 @@ def main():
     test_router()
     test_router_requirements()
     test_mesh_and_gltf_pure()
+    test_physics_pure()
     test_motor_run()
     test_rubric()
     test_blender_suite()

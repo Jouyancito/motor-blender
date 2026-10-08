@@ -67,6 +67,19 @@ MESH_DEFAULT = {
     "source": "gametools:mesh_quality.py:164-167|hard errors",
 }
 
+# Physics-gate defaults (recetas/physics.py). `islands` / `interpenetration` are
+# "fail" | "report" | "skip"; tilt/drift limits are INITIAL, uncalibrated.
+# A family's `physics` dict overrides keys and must carry `reason` (+ `source`
+# pointer when one exists) or basis "initial".
+PHYSICS_DEFAULT = {
+    "stands": True, "drop_test": True, "islands": "report",
+    "interpenetration": "report", "max_tilt_deg": 15.0, "max_drift_m": 0.5,
+    "ground_tol_m": 0.02, "drop_height_m": 0.05, "frames": 60,
+    "basis": "initial, uncalibrated: limits are a first guess, not measured on "
+             "real assets",
+    "source": "CREATION_PROTOCOL.md:205|floating geometry",
+}
+
 _ALL_VIEWS = ["cenital", "tresq_alto", "perfil", "frente", "atras",
               "macro_placa", "bajo"]
 _MOB_SIZES = {
@@ -117,6 +130,9 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "mesh": {"needs_uv": True, "source": "gametools:gen_hair_atlas.py:1-9|hair cards",
                  "basis": "hair cards sample a strand atlas, so they need UVs; overlap limit initial, uncalibrated"},
+        "physics": {"stands": False, "drop_test": False, "islands": "skip", "interpenetration": "skip",
+                    "reason": "hair is an attached part, not a freestanding body, and its cards overlap by design (the strands overlap is the technique)",
+                    "source": "LECCIONES.md#6"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#4", "LECCIONES.md#6"],
         "sources": [
             "LECCIONES.md:88-102|Pintar estructura",
@@ -169,6 +185,9 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "mesh": {"needs_uv": True, "source": "gametools:_carapace_texture.py:1-3|bake the carapace",
                  "basis": "the carapace albedo is baked to a texture; overlap limit initial, uncalibrated"},
+        "physics": {"stands": True, "drop_test": True, "islands": "fail", "interpenetration": "report",
+                    "reason": "the carapace is bone and does not deform, so a rigid drop is meaningful",
+                    "source": "game:turtle/motion/_motion_spec.md:28|Es hueso"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#5", "LECCIONES.md#6",
                     "LECCIONES.md#9", "LECCIONES.md#10", "LECCIONES.md#11"],
         "sources": [
@@ -223,6 +242,9 @@ CATEGORIES = {
         "use_size": None,
         "use_size_exempt": ("a material has no use size of its own; it is "
                             "judged at the size of the asset that carries it"),
+        "physics": {"stands": False, "drop_test": False, "islands": "skip", "interpenetration": "skip",
+                    "reason": "governs a material probed on swatch cubes, not a body",
+                    "source": "recetas/material_swatch.py:1-50|CUBES"},
         "lessons": ["LECCIONES.md#3", "LECCIONES.md#9", "LECCIONES.md#12"],
         "sources": [
             "LECCIONES.md:158-186|control positivo",
@@ -253,6 +275,9 @@ CATEGORIES = {
         "use_size": None,
         "use_size_exempt": ("the export step has no use size of its own; the "
                             "asset family entry carries it"),
+        "physics": {"stands": False, "drop_test": False, "islands": "skip", "interpenetration": "skip",
+                    "reason": "governs the export step, not a family of bodies",
+                    "source": "LECCIONES.md#9"},
         "lessons": ["LECCIONES.md#9", "LECCIONES.md#14"],
         "sources": ["LECCIONES.md:124-133|ground truth", "LECCIONES.md:208-240|No medido"],
     },
@@ -305,6 +330,9 @@ CATEGORIES = {
              "basis": "head+body 15-28 cm plus tail 10.5-24 cm, summed from the "
                       "two sourced ranges (nose-to-tail-tip length)"},
         ],
+        "physics": {"stands": True, "drop_test": True, "islands": "fail", "interpenetration": "report",
+                    "reason": "quadruped: low body on 4 legs, so it stands and must not have floating parts",
+                    "source": "gameart:_bestiary_visual_bible.md:97|Cuadr"},
         "lessons": ["LECCIONES.md#4", "LECCIONES.md#5", "LECCIONES.md#11"],
         "sources": [
             "game:wolf/_synthesis.md:10-35|Medidas reales",
@@ -352,6 +380,8 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _ENV_SIZES,
+        "physics": {"stands": True, "drop_test": True, "islands": "fail", "interpenetration": "report",
+                    "basis": "initial, uncalibrated: props rest on the ground; no family-specific source"},
         "lessons": ["LECCIONES.md#7", "LECCIONES.md#8"],
         "sources": [
             "CREATION_PROTOCOL.md:54-78|Functional/logical",
@@ -401,6 +431,8 @@ CATEGORIES = {
         "use_size": _ENV_SIZES,
         "mesh": {"needs_uv": True, "source": "recetas/village_gen.py:905|USE_REAL_TEXTURES",
                  "basis": "village architecture uses real textures; overlap limit initial, uncalibrated"},
+        "physics": {"stands": True, "drop_test": False, "islands": "report", "interpenetration": "report",
+                    "basis": "initial, uncalibrated: buildings are fixed to the ground and never dropped; separate modules (walls, roof, stakes) are expected"},
         "lessons": ["LECCIONES.md#7", "LECCIONES.md#8"],
         "sources": [
             "CREATION_PROTOCOL.md:151-172|1.80 m mannequin",
@@ -445,6 +477,9 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _ENV_SIZES,
+        "physics": {"stands": False, "drop_test": False, "islands": "skip", "interpenetration": "skip",
+                    "basis": "initial, uncalibrated: terrain/vegetation are placed instances (scatter), not freestanding rigid bodies",
+                    "source": "TECNICAS.md:61-73|scatter_biome"},
         "lessons": ["LECCIONES.md#1", "LECCIONES.md#2"],
         "sources": [
             "TECNICAS.md:10-21|distancia al foco",
@@ -513,6 +548,9 @@ CATEGORIES = {
         ],
         "mesh": {"needs_uv": True, "source": "gametools:golem_guardian/build_golem_guardian.py:620|uv.new",
                  "basis": "the guardian builds UV layers for its normal-map textures; overlap limit initial, uncalibrated"},
+        "physics": {"stands": True, "drop_test": True, "islands": "report", "interpenetration": "skip",
+                    "reason": "bottom-weighted construct that stands; its stones are pressed ~40% embedded into the mass by design and a floating-segment variant exists",
+                    "source": "game:golem/_synthesis.md:101-106|NUCLEO"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "game:golem/_synthesis.md:20-23|bottom-weighted",
@@ -562,6 +600,9 @@ CATEGORIES = {
         "use_size": _MOB_SIZES,
         "mesh": {"max_tris": 11000, "source": "gametools:slime/build_slime.py:100|TRI_BUDGET",
                  "basis": "7600 common slime, 11000 king: the looser king budget is applied to the whole family"},
+        "physics": {"stands": True, "drop_test": False, "islands": "fail", "interpenetration": "report",
+                    "reason": "squash-and-stretch lives in a Godot shader/tween, so a rigid drop of the mesh says nothing",
+                    "source": "gameart:_bestiary_visual_bible.md:150|jiggle"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "gameart:_bestiary_visual_bible.md:96|Blob",
@@ -600,6 +641,9 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
+        "physics": {"stands": False, "drop_test": False, "islands": "fail", "interpenetration": "report",
+                    "reason": "the wasp hovers: it floats above the origin ground plane by contract",
+                    "source": "gametools:wasp/build_wasp.py:26|floats above"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "gameart:_bestiary_visual_bible.md:99|Artr",
@@ -635,6 +679,8 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
+        "physics": {"stands": True, "drop_test": True, "islands": "fail", "interpenetration": "report",
+                    "basis": "initial, uncalibrated: a limbless body lying on the ground; no family-specific source"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9", "LECCIONES.md#11"],
         "sources": [
             "gametools:snake/build_snake.py:1-8|limbless reptile",
@@ -691,6 +737,9 @@ CATEGORIES = {
              "source": "game:hawk/_synthesis.md:11|Envergadura",
              "basis": "falco 1.10 m .. buteo 1.22 m, both sourced"},
         ],
+        "physics": {"stands": False, "drop_test": False, "islands": "fail", "interpenetration": "report",
+                    "reason": "the bird soars above the origin ground plane per brief, it does not stand",
+                    "source": "gametools:bird_prey/build_bird.py:28|soars above"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "game:corvid/_synthesis.md:10-16|Envergadura",

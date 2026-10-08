@@ -45,7 +45,7 @@ from recetas.verdict import Report, PASS, NOT_TESTED
 # every field cited to its source). Re-exported here so `preflight_router.CATEGORIES`
 # keeps working.
 from recetas.router_knowledge import (CATEGORIES, UNIVERSAL_DISCARDED,  # noqa: E402
-                                      MESH_DEFAULT)
+                                      MESH_DEFAULT, PHYSICS_DEFAULT)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -277,7 +277,7 @@ def requirements(subject, rules=None):
            "mannequin_exempt": [], "views": [], "use_size": None,
            "use_size_exempt": [], "structure": [], "declared_parts": [],
            "gaps": [], "size_range": None, "lessons": [],
-           "mesh": dict(MESH_DEFAULT)}
+           "mesh": dict(MESH_DEFAULT), "physics": None, "physics_notes": []}
     sizes = set()
     for r in rules:
         d = r.data
@@ -305,6 +305,22 @@ def requirements(subject, rules=None):
         if mesh.get("max_tris") is not None:
             m["max_tris"] = (mesh["max_tris"] if m["max_tris"] is None
                              else min(m["max_tris"], mesh["max_tris"]))
+        ph = dict(PHYSICS_DEFAULT)
+        ph.update(d.get("physics") or {})
+        req["physics_notes"].append("%s: %s" % (
+            r.category, ph.get("reason") or ph.get("basis")))
+        cur = req["physics"]
+        if cur is None:
+            req["physics"] = ph
+        else:                       # several families: the STRICTER setting wins
+            order = {"skip": 0, "report": 1, "fail": 2}
+            for k in ("islands", "interpenetration"):
+                if order[ph[k]] > order[cur[k]]:
+                    cur[k] = ph[k]
+            cur["stands"] = cur["stands"] or ph["stands"]
+            cur["drop_test"] = cur["drop_test"] or ph["drop_test"]
+            cur["max_tilt_deg"] = min(cur["max_tilt_deg"], ph["max_tilt_deg"])
+            cur["max_drift_m"] = min(cur["max_drift_m"], ph["max_drift_m"])
         req["gaps"].extend("%s: %s" % (r.category, g) for g in d.get("gaps", []))
         req["lessons"].extend(d.get("lessons", []))
         for sr in d.get("size_ranges", []):
@@ -312,6 +328,9 @@ def requirements(subject, rules=None):
                 req["size_range"] = {"dim": sr["dim"],
                                      "range_m": tuple(sr["range_m"]),
                                      "basis": sr.get("basis", "")}
+    if req["physics"] is None:      # unknown subject: no family to relax anything
+        req["physics"] = dict(PHYSICS_DEFAULT)
+        req["physics_notes"].append("unknown subject: defaults, basis initial")
     if sizes:
         req["use_size"] = {"sizes": sorted(sizes, reverse=True)}
     return req
