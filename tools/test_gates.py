@@ -280,6 +280,14 @@ def test_material_swatch():
     expect_exit("exempt como string es rechazado",
                 material_swatch.assert_materials_vary, _stats(_FLOOR),
                 exempt="m")
+    with open(os.path.join(ROOT, "recetas", "material_swatch.py"),
+              encoding="utf-8") as fh:
+        msrc = fh.read()
+    check("el probe renderiza a 16 bits con dither apagado (camino real)",
+          "color_depth='16'" in msrc and "dither_intensity = 0.0" in msrc
+          and "image_settings.color_depth = color_depth" in msrc)
+    check("el umbral declara a que exposicion fue calibrado (media ~0.094)",
+          "0.094" in msrc)
     rep = material_swatch.assert_materials_vary(
         _stats(_FLOOR), exempt={"m": "vidrio pulido, uniforme a proposito"})
     check("exempt con razon queda NOT_APPLICABLE", rep.verdict() == PASS)

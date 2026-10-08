@@ -209,6 +209,10 @@ def _measure(png_path, names, res_per_swatch, height, margin=0.14, step=2):
 #     albedo swing +-3 % ............. 0.00021
 #     albedo swing +-10 % ............ 0.00064
 #
+# Calibrated at swatch mean luminance ~0.094 (linear). `detail` is an ABSOLUTE
+# difference, so a much brighter or darker material scales it: the threshold is
+# NOT validated at other exposures (a relative threshold was not measured).
+#
 # The SAME probe through the old 8-bit path read 0.00000 for every row up to
 # +-10 % once dither was off: an 8-bit code step is 0.0003-0.0037 in this
 # luminance, so the old threshold (0.00010) could only ask "same byte or not",

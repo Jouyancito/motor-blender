@@ -58,8 +58,21 @@ def run(depth):
     print("\n  color_depth=%s" % depth)
     for k, v in stats.items():
         print("    %-14s detail=%.5f  mean=%.3f" % (k, v["detail"], v["mean"]))
+    return stats
+
+
+def verify(stats):
+    """The 16-bit path must separate the flat control from a +-3 % swing with
+    the shipped threshold. SystemExit (rc != 0 under --python-exit-code 1)."""
+    from recetas.material_swatch import MIN_DETAIL_DEFAULT
+    ctl, weak = stats["CONTROL_flat"]["detail"], stats["amp_0.030"]["detail"]
+    if not (ctl < MIN_DETAIL_DEFAULT < weak):
+        raise SystemExit("threshold %.5f does not separate control %.5f from "
+                         "+-3%% swing %.5f" % (MIN_DETAIL_DEFAULT, ctl, weak))
+    print("  VERIFIED: control %.5f < threshold %.5f < +-3%% swing %.5f"
+          % (ctl, MIN_DETAIL_DEFAULT, weak))
 
 
 os.makedirs(OUT, exist_ok=True)
-for d in ("8", "16"):
-    run(d)
+run("8")
+verify(run("16"))
