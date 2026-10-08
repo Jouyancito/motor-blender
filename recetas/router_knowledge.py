@@ -56,6 +56,17 @@ UNIVERSAL_DISCARDED = {
         "recetas/RECETAS.md:35|vertex-paint"),
 }
 
+# Mesh-gate limits (recetas/mesh_quality.py DEFAULT_LIMITS semantics). Every
+# family inherits MESH_DEFAULT; a family's `mesh` dict overrides single keys and
+# carries `source` (a pointer) or basis "initial, uncalibrated".
+MESH_DEFAULT = {
+    "max_nonmanifold": 0, "max_degenerate": 0, "max_inconsistent": 0,
+    "needs_uv": False, "uv_overlap_max": 0.02, "max_tris": None,
+    "basis": ("non-manifold and degenerate faces are hard errors that break "
+              "export; the 0.02 UV-overlap share is initial, uncalibrated"),
+    "source": "gametools:mesh_quality.py:164-167|hard errors",
+}
+
 _ALL_VIEWS = ["cenital", "tresq_alto", "perfil", "frente", "atras",
               "macro_placa", "bajo"]
 _MOB_SIZES = {
@@ -104,6 +115,8 @@ CATEGORIES = {
         "required_views": ["frente", "tresq_alto", "perfil", "atras",
                            "cenital", "bajo"],
         "use_size": _MOB_SIZES,
+        "mesh": {"needs_uv": True, "source": "gametools:gen_hair_atlas.py:1-9|hair cards",
+                 "basis": "hair cards sample a strand atlas, so they need UVs; overlap limit initial, uncalibrated"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#4", "LECCIONES.md#6"],
         "sources": [
             "LECCIONES.md:88-102|Pintar estructura",
@@ -154,6 +167,8 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
+        "mesh": {"needs_uv": True, "source": "gametools:_carapace_texture.py:1-3|bake the carapace",
+                 "basis": "the carapace albedo is baked to a texture; overlap limit initial, uncalibrated"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#5", "LECCIONES.md#6",
                     "LECCIONES.md#9", "LECCIONES.md#10", "LECCIONES.md#11"],
         "sources": [
@@ -384,6 +399,8 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _ENV_SIZES,
+        "mesh": {"needs_uv": True, "source": "recetas/village_gen.py:905|USE_REAL_TEXTURES",
+                 "basis": "village architecture uses real textures; overlap limit initial, uncalibrated"},
         "lessons": ["LECCIONES.md#7", "LECCIONES.md#8"],
         "sources": [
             "CREATION_PROTOCOL.md:151-172|1.80 m mannequin",
@@ -494,6 +511,8 @@ CATEGORIES = {
              "source": "game:wolf/_synthesis.md:24|golem (4,0 m)",
              "basis": "4.0 m sourced; +-20% is an initial, uncalibrated tolerance"},
         ],
+        "mesh": {"needs_uv": True, "source": "gametools:golem_guardian/build_golem_guardian.py:620|uv.new",
+                 "basis": "the guardian builds UV layers for its normal-map textures; overlap limit initial, uncalibrated"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "game:golem/_synthesis.md:20-23|bottom-weighted",
@@ -541,6 +560,8 @@ CATEGORIES = {
         "mannequin_m": 1.80,
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
+        "mesh": {"max_tris": 11000, "source": "gametools:slime/build_slime.py:100|TRI_BUDGET",
+                 "basis": "7600 common slime, 11000 king: the looser king budget is applied to the whole family"},
         "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
         "sources": [
             "gameart:_bestiary_visual_bible.md:96|Blob",

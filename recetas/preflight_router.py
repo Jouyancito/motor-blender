@@ -44,7 +44,8 @@ from recetas.verdict import Report, PASS, NOT_TESTED
 # Category knowledge lives in recetas/router_knowledge.py (one entry per family,
 # every field cited to its source). Re-exported here so `preflight_router.CATEGORIES`
 # keeps working.
-from recetas.router_knowledge import CATEGORIES, UNIVERSAL_DISCARDED  # noqa: E402
+from recetas.router_knowledge import (CATEGORIES, UNIVERSAL_DISCARDED,  # noqa: E402
+                                      MESH_DEFAULT)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -275,7 +276,8 @@ def requirements(subject, rules=None):
     req = {"categories": [r.category for r in rules], "mannequin": False,
            "mannequin_exempt": [], "views": [], "use_size": None,
            "use_size_exempt": [], "structure": [], "declared_parts": [],
-           "gaps": [], "size_range": None, "lessons": []}
+           "gaps": [], "size_range": None, "lessons": [],
+           "mesh": dict(MESH_DEFAULT)}
     sizes = set()
     for r in rules:
         d = r.data
@@ -297,6 +299,12 @@ def requirements(subject, rules=None):
                                      list(d["moving_parts"])))
         elif d.get("moving_parts"):
             req["declared_parts"].extend(d["moving_parts"])
+        mesh = d.get("mesh") or {}
+        m = req["mesh"]
+        m["needs_uv"] = m["needs_uv"] or bool(mesh.get("needs_uv"))
+        if mesh.get("max_tris") is not None:
+            m["max_tris"] = (mesh["max_tris"] if m["max_tris"] is None
+                             else min(m["max_tris"], mesh["max_tris"]))
         req["gaps"].extend("%s: %s" % (r.category, g) for g in d.get("gaps", []))
         req["lessons"].extend(d.get("lessons", []))
         for sr in d.get("size_ranges", []):

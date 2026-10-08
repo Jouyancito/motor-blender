@@ -19,6 +19,8 @@ Run:
 
 import os
 import sys
+import shutil
+import subprocess
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -557,12 +559,15 @@ WIRING = {
                        "preflight_router.requirements"],
     "step_structure": ["asset_spec.check_structure"],
     "step_generator": ["runpy.run_path"],
+    "step_mesh": ["mesh_quality.check_mesh"],
+    "step_gltf": ["gltf_check.validate", "gltf_check.judge"],
     "step_evidence": ["views.orbit_capture", "_place_mannequin",
                       "views.resolve_views"],
     "step_scale": ["scale_ref.require_scale_evidence"],
     "step_use_size": ["use_size.require_use_size"],
 }
-ORDER = ["technique", "structure", "generator", "evidence", "scale", "use_size"]
+ORDER = ["technique", "structure", "generator", "mesh", "gltf", "evidence",
+         "scale", "use_size"]
 
 
 def _calls_by_function(source):
@@ -599,7 +604,8 @@ def _steps_order(source):
 
 
 EXPECTED_FUNCS = {"technique": "step_technique", "structure": "step_structure",
-                  "generator": "step_generator", "evidence": "step_evidence",
+                  "generator": "step_generator", "mesh": "step_mesh",
+                  "gltf": "step_gltf", "evidence": "step_evidence",
                   "scale": "step_scale", "use_size": "step_use_size"}
 
 
@@ -672,6 +678,11 @@ def _install_stubs(tmp, spies):
         spies.append(("use_size", tuple(sizes)))
         return out
 
+    def mesh_gate(objs, limits, verbose=True):
+        spies.append(("mesh", dict(limits)))
+        return Report("MESH").add("x: nonmanifold_edges", PASS), {"stub": {}}
+
+    patch(motor_run.mesh_quality, "check_mesh", mesh_gate)
     patch(motor_run, "_asset_objects", lambda ctx: [_Obj()])
     patch(motor_run, "_place_mannequin", lambda a: spies.append(("mannequin", 1)) or [_Obj()])
     patch(motor_run, "_save_blend", lambda p: spies.append(("save", 1)))
@@ -782,15 +793,20 @@ def test_motor_run():
             check("STEPS reales: los 6 pasos corrieron y se registraron",
                   ctx["completed"] == ORDER, str(ctx["completed"]))
             gates = [s[0] for s in spies]
-            check("cada gate fue ALCANZADO (orbit, scale, use_size)",
-                  all(g in gates for g in ("orbit", "scale", "use_size")),
+            check("cada gate fue ALCANZADO (mesh, orbit, scale, use_size)",
+                  all(g in gates for g in ("mesh", "orbit", "scale", "use_size")),
                   str(gates))
+            mesh_lim = [s[1] for s in spies if s[0] == "mesh"][0]
+            check("el gate de mesh recibe los limites de la familia (router)",
+                  mesh_lim["max_nonmanifold"] == 0 and mesh_lim["needs_uv"] is False
+                  and mesh_lim["max_tris"] is None, str(mesh_lim))
             check("el use_size gate recibio los tamanos de la familia",
                   ("use_size", (512, 256, 128)) in spies)
             rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
             check("el veredicto tiene una fila por paso",
                   all(rows.get(ROW) for ROW in ("technique", "structure",
-                                               "generator", "views", "scale",
+                                               "generator", "mesh", "gltf",
+                                               "views", "scale",
                                                "use_size")), str(rows))
             check("la exencion queda NOT_APPLICABLE", rows["structure"] == NOT_APPLICABLE)
             with open(os.path.join(out, "motor_verdict.json"), encoding="utf-8") as fh:
@@ -819,6 +835,53 @@ def test_motor_run():
                               for s in spies))
             check("el mensaje dice que el generador salio solo",
                   "exited by itself" in msg or "boom" in msg)
+
+            # mesh gate FAIL stops the run before evidence.
+            orig_check = motor_run.mesh_quality.check_mesh
+            motor_run.mesh_quality.check_mesh = lambda o, l, verbose=True: (
+                Report("MESH").add("bad: nonmanifold_edges", FAIL, "3"), {})
+            try:
+                expect_exit("mesh con FAIL -> la corrida falla",
+                            go, ok_gen, "gato gris", "--motor-technique", "x",
+                            sidecar=exempt, approve=True)
+                check("... y no llego a la evidencia", not any(
+                    s[0] == "orbit" for s in spies))
+            finally:
+                motor_run.mesh_quality.check_mesh = orig_check
+
+            # glTF: a .glb written by the generator must be validated.
+            glb_gen = gen("gl.py", "import os\nopen(os.path.join(os.environ["
+                                   "'MOTOR_OUT_DIR'], 'x.glb'), 'wb').write(b'g')\n")
+            orig_val = motor_run.gltf_check.validate
+            try:
+                motor_run.gltf_check.validate = lambda p, **k: {
+                    "file": "x.glb", "numErrors": 0, "numWarnings": 0,
+                    "numInfos": 1, "version": "t"}
+                ctx = go(glb_gen, "gato gris", "--motor-technique", "x",
+                         sidecar=exempt, approve=True)
+                rows = {r["prop"]: r for r in ctx["report"].rows}
+                check("glb escrito por el generador -> gltf PASS validado",
+                      rows["gltf"]["state"] == PASS and "1 .glb" in rows["gltf"]["detail"])
+                motor_run.gltf_check.validate = lambda p, **k: {
+                    "file": "x.glb", "numErrors": 2, "numWarnings": 0,
+                    "numInfos": 0, "version": "t", "errors": ["E1", "E2"]}
+                expect_exit("glb con errores del validador -> la corrida falla",
+                            go, glb_gen, "gato gris", "--motor-technique", "x",
+                            sidecar=exempt, approve=True)
+                motor_run.gltf_check.validate = lambda p, **k: {
+                    "error": "validator not installed. Install: npm ..."}
+                msg = expect_exit("validador NO instalado -> falla ruidosamente",
+                                  go, glb_gen, "gato gris", "--motor-technique", "x",
+                                  sidecar=exempt, approve=True)
+                check("... con el texto 'validator not installed'",
+                      "validator not installed" in msg)
+            finally:
+                motor_run.gltf_check.validate = orig_val
+            ctx = go(ok_gen, "gato gris", "--motor-technique", "x",
+                     sidecar=exempt, approve=True)
+            rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
+            check("sin .glb el paso gltf es NOT_APPLICABLE con razon",
+                  rows["gltf"] == NOT_APPLICABLE)
 
             # Mutations on the live STEPS must not pass.
             lam_steps = [(n, (lambda c: None) if n == "scale" else f)
@@ -1044,6 +1107,118 @@ def test_router():
 
 
 
+def test_mesh_and_gltf_pure():
+    print("\nmesh_quality.judge / gltf_check (no Blender)")
+    from recetas import mesh_quality, gltf_check
+    clean = {"nonmanifold_edges": 0, "degenerate_faces": 0, "inconsistent_edges": 0,
+             "inward_closed": False, "signed_volume": 1.0, "tris_total": 12,
+             "uv": {"has_uv": False, "overlap": None}}
+    rep = mesh_quality.judge(clean, {})
+    check("judge: malla limpia -> sin FAIL ni NOT_TESTED", rep.is_complete(),
+          rep.render())
+    for key, bad in (("nonmanifold_edges", 2), ("degenerate_faces", 1),
+                     ("inconsistent_edges", 4)):
+        m = dict(clean, **{key: bad})
+        check("judge: %s=%d -> FAIL" % (key, bad),
+              mesh_quality.judge(m, {}).verdict() == FAIL)
+    check("judge: normales hacia adentro -> FAIL",
+          mesh_quality.judge(dict(clean, inward_closed=True, signed_volume=-1.0),
+                             {}).verdict() == FAIL)
+    check("judge: familia que exige UV y malla sin UV -> FAIL",
+          mesh_quality.judge(clean, {"needs_uv": True}).verdict() == FAIL)
+    check("judge: UV con 50 % de solapamiento -> FAIL",
+          mesh_quality.judge(dict(clean, uv={"has_uv": True, "overlap": 0.5,
+                                             "tris": 4}),
+                             {"needs_uv": True}).verdict() == FAIL)
+    check("judge: UV con 1 % de solapamiento (limite 2 %) -> PASS",
+          mesh_quality.judge(dict(clean, uv={"has_uv": True, "overlap": 0.01,
+                                             "tris": 4}),
+                             {"needs_uv": True}).verdict() == PASS)
+    check("judge: sin presupuesto con fuente el tri_budget es NOT_APPLICABLE",
+          [r for r in mesh_quality.judge(clean, {}).rows
+           if r["prop"] == "tri_budget"][0]["state"] == NOT_APPLICABLE)
+    check("judge: presupuesto excedido -> FAIL",
+          mesh_quality.judge(dict(clean, tris_total=9000),
+                             {"max_tris": 7600}).verdict() == FAIL)
+    # router -> mesh limits
+    req = preflight_router.requirements("tortuga")
+    check("tortuga exige UV (textura del caparazon, con fuente)",
+          req["mesh"]["needs_uv"] is True)
+    check("slime: presupuesto de tris con fuente (build_slime.py:100)",
+          preflight_router.requirements("slime")["mesh"]["max_tris"] == 11000)
+    check("lobo: sin presupuesto ni UV inventados",
+          preflight_router.requirements("lobo")["mesh"]["max_tris"] is None
+          and preflight_router.requirements("lobo")["mesh"]["needs_uv"] is False)
+    for name, d in router_knowledge.CATEGORIES.items():
+        mesh = d.get("mesh")
+        if mesh:
+            check("%s: la clave mesh cita una fuente que resuelve" % name,
+                  resolve_pointer(mesh["source"])[0] == "ok"
+                  and "basis" in mesh, str(mesh))
+    check("MESH_DEFAULT cita una fuente que resuelve",
+          resolve_pointer(router_knowledge.MESH_DEFAULT["source"])[0] == "ok")
+    # gltf_check judge + loud failure when the validator cannot run
+    state, _ = gltf_check.judge({"file": "a.glb", "numErrors": 0, "numWarnings": 3,
+                                 "numInfos": 0, "version": "x"})
+    check("gltf judge: 0 errores -> PASS", state == PASS)
+    state, detail = gltf_check.judge({"file": "a.glb", "numErrors": 2,
+                                      "numWarnings": 0, "numInfos": 0,
+                                      "version": "x", "errors": ["E1", "E2"]})
+    check("gltf judge: 2 errores -> FAIL con el primero a la vista",
+          state == FAIL and "E1" in detail)
+    state, detail = gltf_check.judge({"error": "validator not installed"})
+    check("gltf judge: validador ausente -> FAIL, nunca PASS",
+          state == FAIL and "not installed" in detail)
+    with tempfile.TemporaryDirectory() as tmp:
+        junk = os.path.join(tmp, "j.glb")
+        open(junk, "wb").write(b"glTF" + b"\0" * 20)
+        old = os.environ.get("MOTOR_GLTF_VALIDATOR_DIR")
+        os.environ["MOTOR_GLTF_VALIDATOR_DIR"] = os.path.join(tmp, "nope")
+        try:
+            res = gltf_check.validate(junk)
+        finally:
+            if old is None:
+                del os.environ["MOTOR_GLTF_VALIDATOR_DIR"]
+            else:
+                os.environ["MOTOR_GLTF_VALIDATOR_DIR"] = old
+        check("validate: modulo ausente -> 'validator not installed' + comando",
+              "validator not installed" in res.get("error", "")
+              and "npm install" in res["error"], str(res))
+        check("validate: sin node en PATH tambien falla ruidoso",
+              "validator not installed" in gltf_check.validate(
+                  junk, node="/nonexistent/node").get("error", ""))
+        res = gltf_check.validate(junk)
+        check("validate: un GLB basura lo rechaza el validador real",
+              gltf_check.judge(res)[0] == FAIL, str(res))
+
+
+def test_blender_suite():
+    print("\ntest_blender_gates.py (needs Blender)")
+    blender = shutil.which("blender")
+    if not blender:
+        if os.environ.get("MOTOR_TESTS_NO_BLENDER") == "1":
+            print("  SKIPPED explicitly (MOTOR_TESTS_NO_BLENDER=1): the Blender "
+                  "gate fixtures did NOT run")
+            return
+        check("blender disponible para los fixtures de bpy", False,
+              "blender no esta en PATH; MOTOR_TESTS_NO_BLENDER=1 lo omite A LA VISTA")
+        return
+    p = subprocess.run([blender, "-b", "--factory-startup", "--python-exit-code",
+                        "1", "--python",
+                        os.path.join(ROOT, "tools", "test_blender_gates.py")],
+                       capture_output=True, text=True, timeout=600)
+    seen = 0
+    for line in p.stdout.splitlines():
+        m = re.match(r"^  (ok  |FAIL)  (.*)$", line)
+        if m:
+            seen += 1
+            check("[blender] " + m.group(2).split(" -- ")[0], m.group(1) == "ok  ",
+                  line)
+    check("la suite de Blender corrio y termino limpia (rc=0, >0 fixtures)",
+          p.returncode == 0 and seen > 0, "rc=%s seen=%s %s" % (
+              p.returncode, seen, p.stderr[-200:]))
+
+
 def test_router_requirements():
     print("\npreflight_router.requirements()")
     check("gato -> mamifero", preflight_router.route("gato gris").category
@@ -1118,7 +1293,9 @@ def main():
     test_router_knowledge()
     test_router()
     test_router_requirements()
+    test_mesh_and_gltf_pure()
     test_motor_run()
+    test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]
     print("\n" + "=" * 60)
