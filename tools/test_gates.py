@@ -552,6 +552,7 @@ def test_router_knowledge():
 import ast                                                   # noqa: E402
 import json                                                  # noqa: E402
 import motor_run                                             # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 # step function -> the gate call that must stay inside it.
 WIRING = {
@@ -814,6 +815,11 @@ def test_motor_run():
             check("con huecos abiertos el veredicto es PASS_WITH_GAPS, no PASS",
                   vj["verdict"] == "PASS_WITH_GAPS" and len(vj["gaps"]) >= 3,
                   str(vj["verdict"]))
+            check("el verdict.json trae rubric PENDING y status EVIDENCE_READY (no PASS)",
+                  vj["status"] == "EVIDENCE_READY"
+                  and vj["rubric"]["status"] == "PENDING"
+                  and len(vj["rubric"]["dimensions"]) == 5
+                  and len(vj["rubric"]["questions"]) > 5, str(vj.get("status")))
             check("... y los huecos nombran la exencion y la altura sin fuente",
                   any("structure exempt" in g for g in vj["gaps"])
                   and any("size range" in g for g in vj["gaps"]))
@@ -1192,6 +1198,155 @@ def test_mesh_and_gltf_pure():
               gltf_check.judge(res)[0] == FAIL, str(res))
 
 
+def test_rubric():
+    print("\nrubric.py / score_rubric.py")
+    from recetas import rubric as R
+    import score_rubric as CLI
+
+    rules = preflight_router.route_all("tortuga")
+    req = preflight_router.requirements("tortuga")
+    rows = motor_run._structure_rows(rules)
+    rub = R.build_rubric("tortuga", rules, req, rows)
+    check("las 5 dimensiones GPTEval3D/3DGen-Bench empiezan PENDING (sin score)",
+          list(rub["dimensions"]) == ["plausibility_3d", "geometry_detail",
+                                      "texture_quality",
+                                      "geometry_texture_coherence",
+                                      "prompt_fidelity"]
+          and all(d["score"] is None for d in rub["dimensions"].values())
+          and rub["status"] == "PENDING")
+    qs = rub["questions"]
+    check("hay preguntas derivadas del router y TODAS citan su campo",
+          len(qs) >= 10 and all(q["source"].startswith("router:") for q in qs))
+    check("los ids de pregunta son unicos",
+          len({q["id"] for q in qs}) == len(qs))
+    check("preguntas de estructura salen de las filas del spec (6 partes)",
+          len([q for q in qs if "structure_spec#" in q["source"]]) == 6)
+    check("una pregunta por tecnica descartada de la familia",
+          len([q for q in qs if q["source"].startswith("router:quelonio.discarded")])
+          == len(router_knowledge.CATEGORIES["quelonio"]["discarded"]))
+    check("las vistas ingratas tienen su pregunta (perfil, bajo, cenital, atras)",
+          all(any("required_views[%s]" % v in q["source"] for q in qs)
+              for v in ("perfil", "bajo", "cenital", "atras")))
+    check("el hueco declarado (tail) se pregunta",
+          any("tail" in q["text"] and q["source"].endswith(".gaps") for q in qs))
+    unk = R.build_rubric("astrolabio", [], preflight_router.requirements("astrolabio"))
+    check("sujeto sin familia: pregunta de reconocimiento con fuente router:unknown",
+          unk["questions"][0]["source"] == "router:unknown")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ev = os.path.join(tmp, "a.png")
+        open(ev, "wb").write(b"x")
+
+        def doc(**kw):
+            d = {"verdict": "PASS", "gaps": [], "evidence": [ev],
+                 "rubric": R.build_rubric("tortuga", rules, req, rows)}
+            d.update(kw)
+            d["status"] = R.overall_status(d)
+            return d
+
+        d = doc()
+        check("gates PASS + rubric PENDING -> EVIDENCE_READY, jamas PASS",
+              d["status"] == "EVIDENCE_READY")
+        d["status"] = "PASS"          # tampered field must not matter
+        check("control: overall_status recalcula, no confia en el campo 'status'",
+              R.overall_status(d) == "EVIDENCE_READY")
+        check("verdict sin bloque rubric -> EVIDENCE_READY (no PASS)",
+              R.overall_status({"verdict": "PASS"}) == "EVIDENCE_READY")
+        check("gates FAIL domina todo",
+              R.overall_status(dict(doc(), verdict="FAIL")) == "FAIL")
+
+        def full(d, score=4, ans="yes"):
+            sc = {k: (score, "ok" if score < 3 else "") for k in d["rubric"]["dimensions"]}
+            an = {q["id"]: (ans, "n" if ans != "yes" else "") for q in d["rubric"]["questions"]}
+            return sc, an
+
+        d = doc()
+        sc, an = full(d)
+        st = R.apply_review(d, "Joan", sc, an)
+        check("todo completo y bueno -> PASS", st == "PASS" and d["rubric"]["status"] == "PASS")
+        check("... con revisor y fecha registrados",
+              d["rubric"]["reviewer"] == "Joan" and d["rubric"]["date"])
+        d = doc(gaps=["a gap"])
+        sc, an = full(d)
+        check("completo y bueno CON huecos -> PASS_WITH_GAPS",
+              R.apply_review(d, "Joan", sc, an) == "PASS_WITH_GAPS")
+        d = doc()
+        sc, an = full(d)
+        sc["texture_quality"] = (2, "costuras visibles en el vientre")
+        check("un score < 3 (con nota) -> FAIL", R.apply_review(d, "Joan", sc, an) == "FAIL")
+        d = doc()
+        sc, an = full(d)
+        qid = d["rubric"]["questions"][0]["id"]
+        an[qid] = ("no", "la cola flota")
+        check("una respuesta 'no' -> FAIL", R.apply_review(d, "Joan", sc, an) == "FAIL")
+        d = doc()
+        sc, an = full(d)
+        del an[qid]
+        check("una pregunta sin responder -> sigue EVIDENCE_READY",
+              R.apply_review(d, "Joan", sc, an) == "EVIDENCE_READY")
+        d = doc()
+        sc, _an = full(d)
+        check("scores sin responder preguntas -> EVIDENCE_READY",
+              R.apply_review(d, "Joan", sc, {}) == "EVIDENCE_READY")
+        for label, kw in (("score 6", {"scores": {"plausibility_3d": (6, "")}}),
+                          ("score 0", {"scores": {"plausibility_3d": (0, "")}}),
+                          ("score 2 sin nota", {"scores": {"plausibility_3d": (2, "")}}),
+                          ("dimension inventada", {"scores": {"belleza": (5, "")}}),
+                          ("respuesta inventada", {"answers": {"q01": ("maybe", "")}}),
+                          ("'no' sin nota", {"answers": {"q01": ("no", "")}}),
+                          ("pregunta inexistente", {"answers": {"q99": ("yes", "")}}),
+                          ("sin revisor", {"reviewer": ""})):
+            reviewer = kw.pop("reviewer", "Joan")
+            try:
+                R.apply_review(doc(), reviewer, kw.get("scores"), kw.get("answers"))
+                check("rechaza %s" % label, False, "lo acepto")
+            except R.RubricError:
+                check("rechaza %s" % label, True)
+        os.remove(ev)
+        try:
+            R.apply_review(doc(), "Joan", *full(doc()))
+            check("rechaza juzgar evidencia que ya no existe", False)
+        except R.RubricError:
+            check("rechaza juzgar evidencia que ya no existe", True)
+
+        # CLI end to end, batch mode.
+        open(ev, "wb").write(b"x")
+        d = doc()
+        path = os.path.join(tmp, "motor_verdict.json")
+        json.dump(d, open(path, "w"))
+        argv = [path, "--reviewer", "Joan"]
+        for k in d["rubric"]["dimensions"]:
+            argv += ["--score", "%s=4" % k]
+        for q in d["rubric"]["questions"][:-1]:
+            argv += ["--answer", "%s=yes" % q["id"]]
+        CLI.main(argv)
+        after = json.load(open(path))
+        check("CLI: faltando UNA respuesta el estado sigue EVIDENCE_READY",
+              after["status"] == "EVIDENCE_READY")
+        last = d["rubric"]["questions"][-1]["id"]
+        CLI.main([path, "--reviewer", "Joan", "--answer", "%s=yes" % last])
+        after = json.load(open(path))
+        check("CLI: al completar todo pasa a PASS", after["status"] == "PASS"
+              and after["rubric"]["reviewer"] == "Joan")
+        try:
+            CLI.main([path, "--reviewer", "Joan", "--score", "plausibility_3d=1"])
+            check("CLI: score 1 sin nota se rechaza", False)
+        except SystemExit as exc:
+            check("CLI: score 1 sin nota se rechaza", "needs a note" in str(exc))
+
+    src = open(os.path.join(ROOT, "motor_run.py"), encoding="utf-8").read()
+    check("motor_run.run construye el rubric (no se puede omitir)",
+          "rubric.build_rubric" in _calls_by_function(src)["run"])
+    check("control: detecta build_rubric removido",
+          "rubric.build_rubric" not in _calls_by_function(
+              src.replace("rubric.build_rubric(", "print("))["run"])
+    check("no hay llamadas a APIs externas de IA en el rubric ni en la CLI",
+          not any(w in open(os.path.join(ROOT, f), encoding="utf-8").read().lower()
+                  for f in ("recetas/rubric.py", "tools/score_rubric.py")
+                  for w in ("anthropic", "openai", "urllib.request", "requests.",
+                            "http://", "https://api")))
+
+
 def test_blender_suite():
     print("\ntest_blender_gates.py (needs Blender)")
     blender = shutil.which("blender")
@@ -1295,6 +1450,7 @@ def main():
     test_router_requirements()
     test_mesh_and_gltf_pure()
     test_motor_run()
+    test_rubric()
     test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]

@@ -52,7 +52,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from recetas import (asset_spec, gltf_check, mesh_quality, preflight_router,  # noqa: E402
-                     scale_ref, use_size, views)
+                     rubric, scale_ref, use_size, views)
 from recetas.verdict import Report, PASS, FAIL, NOT_APPLICABLE  # noqa: E402
 
 
@@ -168,7 +168,7 @@ def make_ctx(argv):
         "allow_unknown": unknown_entry["reason"] if unknown_entry else "",
         "structure_exempt": struct_entry["reason"] if struct_entry else "",
         "report": Report("MOTOR_RUN %s :: %s" % (stem, subject)),
-        "rules": None, "req": None, "gaps": [], "measures": {}, "evidence": [], "asset_objects": [],
+        "rules": None, "rules_all": [], "req": None, "gaps": [], "measures": {}, "evidence": [], "asset_objects": [],
     }
 
 
@@ -185,6 +185,7 @@ def step_technique(ctx):
         ctx["subject"], ctx["technique"],
         allow_unknown=bool(ctx["allow_unknown"]), reason=ctx["allow_unknown"])
     ctx["rules"] = rules
+    ctx["rules_all"] = preflight_router.route_all(ctx["subject"])
     ctx["req"] = preflight_router.requirements(ctx["subject"])
     cats = ctx["req"]["categories"] or ["UNKNOWN (allowed: %s)" % ctx["allow_unknown"]]
     ctx["report"].add("technique", PASS, "%r ok for %s"
@@ -411,6 +412,21 @@ ROW_FOR = {"technique": "technique", "structure": "structure",
            "use_size": "use_size"}
 
 
+def _structure_rows(rules_all):
+    """{category: {part: row}} for the rubric's structure questions."""
+    out = {}
+    for r in rules_all:
+        spec = r.data.get("structure_spec")
+        if not spec:
+            continue
+        table = asset_spec.parse_structure(
+            asset_spec.find_spec(os.path.join(ROOT, spec)))
+        wanted = {p.lower() for p in r.data.get("moving_parts", [])}
+        out[r.category] = {k: v for k, v in table.items()
+                           if k in wanted or not wanted}
+    return out
+
+
 def run(argv, steps=None):
     ctx = make_ctx(argv)
     ctx["completed"] = []
@@ -430,17 +446,26 @@ def run(argv, steps=None):
         else report.verdict()
     ctx["verdict_label"] = label
     os.makedirs(ctx["out"], exist_ok=True)
-    with open(os.path.join(ctx["out"], "motor_verdict.json"), "w",
-              encoding="utf-8") as fh:
-        json.dump({"subject": ctx["subject"], "generator": ctx["generator"],
-                   "verdict": label, "gaps": ctx["gaps"], "measures": ctx["measures"],
-                   "rows": report.rows,
-                   "evidence": ctx["evidence"]}, fh, indent=2, default=str)
+    # The visual half of the verdict: derived from the router, filled in by a
+    # reviewer who LOOKS at the evidence. Until then the status cannot be PASS.
+    rub = rubric.build_rubric(ctx["subject"], ctx["rules_all"], ctx["req"],
+                              _structure_rows(ctx["rules_all"]))
+    doc = {"subject": ctx["subject"], "generator": ctx["generator"],
+           "verdict": label, "gaps": ctx["gaps"], "measures": ctx["measures"],
+           "rows": report.rows, "evidence": ctx["evidence"], "rubric": rub}
+    doc["status"] = rubric.overall_status(doc)
+    ctx["status"] = doc["status"]
+    ctx["verdict_path"] = os.path.join(ctx["out"], "motor_verdict.json")
+    with open(ctx["verdict_path"], "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, default=str)
     report.require_complete()
-    print("[motor_run] gates %s (%d open gaps). This is NOT a visual verdict "
-          "-- open:" % (label, len(ctx["gaps"])))
+    print("[motor_run] gates %s (%d open gaps); STATUS %s: this is NOT a visual "
+          "verdict. Open the evidence, then score it:" % (label, len(ctx["gaps"]),
+                                                          ctx["status"]))
     for p in ctx["evidence"]:
         print("    %s" % p)
+    print("    python3 %s %s" % (os.path.join(ROOT, "tools", "score_rubric.py"),
+                                ctx["verdict_path"]))
     return ctx
 
 
