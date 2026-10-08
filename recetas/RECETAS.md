@@ -20,6 +20,10 @@ subieron el éxito de otro agente 0/3→2/3) + outer loop de SceneCraft. Tier A.
 | `verdict.py` | Veredicto de 4 estados (PASS/FAIL/NOT_TESTED/NOT_APPLICABLE); un NOT_TESTED no aprueba | revisión externa 2026-09-02, 26 fixtures |
 | `asset_spec.py` | Gate del preflight 4d: parte móvil sin renglón ESTRUCTURA → SystemExit | fixtures + caso tortuga |
 | `preflight_router.py` | Router por palabra clave: reglas, técnica establecida y DESCARTADAS de la familia | caso pelo 2026-08-22, con control positivo |
+| `router_knowledge.py` | Conocimiento cosechado por familia (8): tecnica establecida, DESCARTADAS, maniqui, vistas, tamano de uso, huecos declarados; cada campo cita su fuente y los fixtures verifican las citas | LECCIONES/CREATION_PROTOCOL/TECNICAS + memoria, 160 fixtures |
+| `scale_ref.py` | UN maniqui de 1.80 m (antes copiado en village_gen y clown_gen) + `require_scale_evidence`: el build falla sin maniqui ni renders | village_gen destacamento, clown_gen, gato |
+| `views.py` | Set canonico de vistas (incluye las ingratas: perfil, bajo, cenital) + `orbit_capture` que verifica cada archivo en disco | gato via motor_run |
+| `../motor_run.py` | Entrada unica: technique > structure > generador > evidencia > escala > use_size; ningun generador salta un gate (fixture falla si se desconecta uno) | build_gato.py, primer cliente |
 | `ribbon_tinta.py` | Línea de tinta paramétrica que cabalga el relieve (raycast + strip grosor constante) | sonrisa v3 (curva + comisuras) |
 | `nails_asentados.py` | Cuñas de queratina asentadas en puntas (uñas/garras), material mate | uñas de pies (close-up verificado) |
 | `bvh_glue.py` | Conformar/pegar un objeto a la superficie con offset proud por normal | mouth_lip re-glue |

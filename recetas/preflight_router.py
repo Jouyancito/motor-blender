@@ -88,7 +88,7 @@ class Rules:
         if d.get("moving_parts"):
             out.append("  PARTES MOVILES (4d): %s" % ", ".join(d["moving_parts"]))
         if d.get("mannequin_m"):
-            out.append("  ESCALA (3):   maniqui de %.2f m en la escena, renders con el"
+            out.append("  ESCALA (3):   maniqui de %.2f m en la escena y en los renders"
                        % d["mannequin_m"])
         elif d.get("mannequin_exempt"):
             out.append("  ESCALA (3):   n/a -- %s" % d["mannequin_exempt"])

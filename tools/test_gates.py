@@ -492,6 +492,159 @@ def test_router_knowledge():
 
 
 # ---------------------------------------------------------------------------
+# motor_run.py -- the single entry point must keep calling every gate
+# ---------------------------------------------------------------------------
+
+import ast                                                   # noqa: E402
+import json                                                  # noqa: E402
+import motor_run                                             # noqa: E402
+
+# step function -> the gate call that must stay inside it.
+WIRING = {
+    "step_technique": ["preflight_router.require_technique",
+                       "preflight_router.requirements"],
+    "step_structure": ["asset_spec.check_structure"],
+    "step_generator": ["runpy.run_path"],
+    "step_evidence": ["views.orbit_capture", "scale_ref.build_mannequin",
+                      "views.resolve_views"],
+    "step_scale": ["scale_ref.require_scale_evidence"],
+    "step_use_size": ["use_size.require_use_size"],
+}
+ORDER = ["technique", "structure", "generator", "evidence", "scale", "use_size"]
+
+
+def _calls_by_function(source):
+    """{function name: set of dotted call names} -- the AST view of the file."""
+    out = {}
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef):
+            names = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    f, parts = sub.func, []
+                    while isinstance(f, ast.Attribute):
+                        parts.append(f.attr)
+                        f = f.value
+                    if isinstance(f, ast.Name):
+                        parts.append(f.id)
+                    names.add(".".join(reversed(parts)))
+            out[node.name] = names
+    return out
+
+
+def _missing_wiring(source):
+    calls = _calls_by_function(source)
+    return ["%s -> %s" % (fn, c) for fn, need in WIRING.items()
+            for c in need if c not in calls.get(fn, set())]
+
+
+def _steps_order(source):
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "STEPS" for t in node.targets):
+            return [e.elts[0].value for e in node.value.elts]
+    return []
+
+
+def test_motor_run():
+    print("\nmotor_run.py -- wiring (a gate that stops being called must be loud)")
+    with open(os.path.join(ROOT, "motor_run.py"), encoding="utf-8") as fh:
+        src = fh.read()
+
+    miss = _missing_wiring(src)
+    check("motor_run llama a TODOS los gates", not miss, "; ".join(miss))
+    check("el orden de pasos es technique>structure>generator>evidence>scale>use_size",
+          _steps_order(src) == ORDER, str(_steps_order(src)))
+
+    # Controls: the detector must see a gate being unwired.
+    unwired = src.replace("use_size.require_use_size(", "print(")
+    check("control: detecta require_use_size removido",
+          any("require_use_size" in m for m in _missing_wiring(unwired)))
+    unwired = src.replace("scale_ref.require_scale_evidence(", "print(")
+    check("control: detecta require_scale_evidence removido",
+          any("require_scale_evidence" in m for m in _missing_wiring(unwired)))
+    unwired = src.replace("preflight_router.require_technique(", "print(")
+    check("control: detecta require_technique removido",
+          any("require_technique" in m for m in _missing_wiring(unwired)))
+    unwired = src.replace("asset_spec.check_structure(", "print(")
+    check("control: detecta check_structure removido",
+          any("check_structure" in m for m in _missing_wiring(unwired)))
+    reordered = src.replace('("technique", step_technique),\n    ("structure", '
+                            'step_structure),', '("structure", step_structure),\n'
+                            '    ("technique", step_technique),')
+    check("control: detecta pasos reordenados",
+          _steps_order(reordered) != ORDER)
+
+    # Behaviour, no Blender: bad inputs stop BEFORE the generator runs.
+    with tempfile.TemporaryDirectory() as tmp:
+        gen = os.path.join(tmp, "g.py")
+        with open(gen, "w", encoding="utf-8") as fh:
+            fh.write("# empty generator\n")
+        ran = []
+
+        def fake_generator(ctx):
+            ran.append(ctx["subject"])
+
+        def steps(extra=None):
+            return [("technique", motor_run.step_technique),
+                    ("structure", motor_run.step_structure),
+                    ("generator", fake_generator)]
+
+        def go(subject, *opts, sidecar=None):
+            ran.clear()
+            if sidecar is not None:
+                with open(os.path.join(tmp, "g.motor.json"), "w",
+                          encoding="utf-8") as fh:
+                    json.dump(sidecar, fh)
+            elif os.path.exists(os.path.join(tmp, "g.motor.json")):
+                os.remove(os.path.join(tmp, "g.motor.json"))
+            return motor_run.run([gen, subject, "--motor-out",
+                                  os.path.join(tmp, "out")] + list(opts),
+                                 steps=steps())
+
+        expect_exit("sujeto desconocido -> frena",
+                    go, "astrolabio de bronce", "--motor-technique", "x")
+        check("... y el generador NO corrio", ran == [])
+        expect_exit("sin tecnica declarada -> frena", go, "gato gris")
+        check("... y el generador NO corrio (sin tecnica)", ran == [])
+        expect_exit("tecnica descartada -> frena", go, "pelo del guerrero",
+                    "--motor-technique", "polygon_shells")
+        check("... y el generador NO corrio (descartada)", ran == [])
+        expect_exit("sin partes moviles ni exencion -> frena",
+                    go, "gato gris", "--motor-technique", "x")
+        check("... y el generador NO corrio (sin estructura)", ran == [])
+        expect_exit("tortuga: 'tail' sin fila de estructura -> frena",
+                    go, "tortuga", "--motor-technique", "x")
+        check("... y el generador NO corrio (parte sin investigar)", ran == [])
+        expect_exit("exencion SIN razon no cuenta como exencion",
+                    go, "gato gris", "--motor-technique", "x",
+                    sidecar={"structure": {"exempt": ""}})
+        ctx = go("gato gris", "--motor-technique", "x",
+                 sidecar={"structure": {"exempt": "placeholder sin anatomia"}})
+        check("con exencion razonada el generador SI corre", ran == ["gato gris"])
+        rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
+        check("la exencion queda NOT_APPLICABLE en el veredicto",
+              rows.get("structure") == NOT_APPLICABLE)
+        check("el veredicto se escribio a disco",
+              os.path.isfile(os.path.join(tmp, "out", "motor_verdict.json")))
+
+    # The first real client's sidecar must be valid against the live router.
+    with open(os.path.join(ROOT, "recetas", "gato", "build_gato.motor.json"),
+              encoding="utf-8") as fh:
+        side = json.load(fh)
+    expect_no_exit("build_gato.motor.json: tecnica aceptada por el router",
+                   preflight_router.require_technique, "gato gris",
+                   side["technique"], verbose=False)
+    check("build_gato.motor.json: la exencion de estructura trae razon",
+          len(side["structure"]["exempt"]) > 20)
+    with open(os.path.join(ROOT, "recetas", "gato", "build_gato.py"),
+              encoding="utf-8") as fh:
+        gsrc = fh.read()
+    check("build_gato no llama gates por su cuenta (los corre motor_run)",
+          "require_technique" not in gsrc and "require_structure" not in gsrc)
+
+
+# ---------------------------------------------------------------------------
 # preflight_router.py
 # ---------------------------------------------------------------------------
 
@@ -634,6 +787,7 @@ def main():
     test_router_knowledge()
     test_router()
     test_router_requirements()
+    test_motor_run()
 
     failed = [n for n, ok, _ in _results if not ok]
     print("\n" + "=" * 60)
