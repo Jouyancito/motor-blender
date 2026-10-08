@@ -29,6 +29,8 @@ from recetas.verdict import (Report, PASS, FAIL, NOT_TESTED,  # noqa: E402
 from recetas import asset_spec                                # noqa: E402
 from recetas import preflight_router                          # noqa: E402
 from recetas import material_swatch                           # noqa: E402
+from recetas import scale_ref                                 # noqa: E402
+from recetas import views                                     # noqa: E402
 
 _results = []
 
@@ -284,6 +286,78 @@ def test_material_swatch():
 
 
 # ---------------------------------------------------------------------------
+# scale_ref.py / views.py (pure parts -- no Blender)
+# ---------------------------------------------------------------------------
+
+def test_scale_ref_and_views():
+    print("\nscale_ref.py / views.py")
+    check("la geometria del maniqui suma 1.80 m",
+          abs(scale_ref.HEAD_Z + scale_ref.HEAD_R - 1.80) < 1e-9
+          and scale_ref.MANNEQUIN_H == 1.80)
+
+    ok = lambda p: True            # noqa: E731
+    big = lambda p: 100            # noqa: E731
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], exists=ok, size_of=big)
+    check("maniqui 1.80 + renders -> sin FAIL ni NOT_TESTED duro",
+          not rep.failed and rep.rows[0]["state"] == PASS
+          and rep.rows[1]["state"] == PASS)
+    rep = scale_ref.scale_evidence_report(None, ["a.png"], exists=ok, size_of=big)
+    check("sin maniqui en la escena -> FAIL", rep.rows[0]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.20, ["a.png"], exists=ok, size_of=big)
+    check("maniqui reescalado (1.20 m) -> FAIL", rep.rows[0]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"],
+                                          exists=lambda p: False, size_of=big)
+    check("render que no existe -> FAIL", rep.rows[1]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], exists=ok,
+                                          size_of=lambda p: 0)
+    check("render vacio -> FAIL", rep.rows[1]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, [], exists=ok, size_of=big)
+    check("sin lista de renders -> NOT_TESTED, no PASS",
+          rep.rows[1]["state"] == NOT_TESTED)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=0.80,
+                                          expected_height_m=(0.66, 0.84),
+                                          exists=ok, size_of=big)
+    check("altura del asset dentro del rango CON fuente -> PASS",
+          rep.rows[2]["state"] == PASS)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=1.30,
+                                          expected_height_m=(0.66, 0.84),
+                                          exists=ok, size_of=big)
+    check("altura del asset fuera del rango -> FAIL",
+          rep.rows[2]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=1.30,
+                                          exists=ok, size_of=big)
+    check("sin rango con fuente la altura queda NOT_TESTED (no se inventa)",
+          rep.rows[2]["state"] == NOT_TESTED)
+
+    # No copy of the mannequin may come back into the generators.
+    for gen in ("village_gen.py", "clown_gen.py"):
+        with open(os.path.join(ROOT, "recetas", gen), encoding="utf-8") as fh:
+            src = fh.read()
+        check("%s no vuelve a copiar el maniqui" % gen,
+              "ref_human_body" not in src and "scale_ref.build_mannequin" in src)
+
+    # views: the guard, with positive controls.
+    expect_no_exit("el set canonico pasa require_views", views.require_views,
+                   views.VIEWS)
+    no_bajo = [v for v in views.VIEWS if v[0] != "bajo"]
+    msg = expect_exit("un set sin 'bajo' -> SystemExit", views.require_views,
+                      no_bajo)
+    check("el error nombra el angulo perdido", "bajo" in msg)
+    no_perfil = [v for v in views.VIEWS if v[0] != "perfil"]
+    expect_exit("un set sin 'perfil' -> SystemExit", views.require_views,
+                no_perfil)
+    only_front = [v for v in views.VIEWS if v[0] in ("frente", "perfil", "bajo")]
+    expect_exit("un set sin vista cenital/alta -> SystemExit",
+                views.require_views, only_front)
+    expect_exit("etiqueta de vista desconocida -> SystemExit",
+                views.resolve_views, ["frente", "inventada"])
+    check("resolve_views devuelve las tuplas pedidas",
+          [v[0] for v in views.resolve_views(
+              ["cenital", "tresq_alto", "perfil", "bajo"])]
+          == ["cenital", "tresq_alto", "perfil", "bajo"])
+
+
+# ---------------------------------------------------------------------------
 # preflight_router.py
 # ---------------------------------------------------------------------------
 
@@ -374,6 +448,7 @@ def main():
     test_asset_spec()
     test_asset_spec_corpus_shapes()
     test_material_swatch()
+    test_scale_ref_and_views()
     test_router()
 
     failed = [n for n, ok, _ in _results if not ok]

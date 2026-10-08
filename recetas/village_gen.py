@@ -322,6 +322,9 @@ Run (headless):
 import bpy, bmesh, sys, os, math, random
 from mathutils import Vector, noise
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from recetas import scale_ref  # noqa: E402  (single 1.80 m mannequin)
+
 args = sys.argv[sys.argv.index("--") + 1:]
 BIOME = args[0]
 # v15 fix (2026-07-25): a RELATIVE out_dir arg used to be passed straight to
@@ -357,7 +360,7 @@ MOOD_ARG = args[7] if len(args) > 7 else "on"
 MOOD_ON = MOOD_ARG.strip().lower() not in ("off", "0", "false", "none")
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lookdev"))
 
-MANNEQUIN_H = 1.80  # proportion ground truth — every door/window is checked against this
+MANNEQUIN_H = scale_ref.MANNEQUIN_H  # proportion ground truth (1.80 m) — every door/window is checked against this
 
 # ── STYLE layer (BIOME) ─────────────────────────────────────────────────────
 # wood_dark retuned 2026-07-18 from real references (Fort Harrod / Castrum
@@ -4786,17 +4789,14 @@ def build_vegetation(cx, cy, ring_r, style, exclude=(), ring_radius_fn=None):
 
 def build_scale_ref(cx, cy, ring_r, gate_ang):
     """1.80 m human mannequin — proportion ground truth, placed just inside
-    the gate corridor so doors/windows/stairs read against it."""
+    the gate corridor so doors/windows/stairs read against it. The mannequin
+    itself lives in recetas/scale_ref.py (single source)."""
     x = cx + 2.5
     y = cy + math.sin(gate_ang) * (ring_r - 4.0)
     z = terrain_h(x, y)
-    m = mat("scale_ref", (0.80, 0.20, 0.18), rough=0.5)
-    cylinder("ref_human_body_%d_%d" % (int(cx), int(cy)), 0.20, 1.50, (x, y, z + 0.75), m, verts_n=8)
-    bpy.ops.mesh.primitive_uv_sphere_add(segments=10, ring_count=8, radius=0.15,
-                                         location=(x, y, z + 1.65))
-    head = bpy.context.object
-    head.name = "ref_human_head_%d_%d" % (int(cx), int(cy))
-    head.data.materials.append(m)
+    scale_ref.build_mannequin(location=(x, y, z),
+                              suffix="_%d_%d" % (int(cx), int(cy)),
+                              material=mat("scale_ref", (0.80, 0.20, 0.18), rough=0.5))
 
 # ── DESTACAMENTO — small outpost: 2-3 structures + wall fragment + tower ──
 def build_destacamento(cx, cy, ring_r, style, threat):

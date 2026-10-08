@@ -15,6 +15,9 @@ Run: blender -b --python clown_gen.py -- <out_dir> [seed]
 import bpy, sys, os, math, random
 from mathutils import Vector
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from recetas import scale_ref  # noqa: E402
+
 args = sys.argv[sys.argv.index("--") + 1:]
 OUT_DIR = args[0]
 SEED = int(args[1]) if len(args) > 1 else 7
@@ -160,11 +163,10 @@ for i, (px, py, pz) in enumerate(puffs):
 cyl("hat_crown", 0.055, 0.075, (X, 0.02, HEAD_C + 0.235), mat("black", BLACK, rough=0.4))
 cyl("hat_brim", 0.085, 0.014, (X, 0.02, HEAD_C + 0.20), mat("black", BLACK, rough=0.4))
 
-# ── 1.80 m reference mannequin (standard, PO proportion rule) ─────────────────
-mx = 0.85
-mman = mat("scale_ref", (0.80, 0.20, 0.18), rough=0.5)
-cyl("ref_human_body", 0.20, 1.50, (mx, 0, 0.75), mman, verts=8)
-sphere("ref_human_head", 0.15, (mx, 0, 1.65), mman, seg=10)
+# ── 1.80 m reference mannequin (recetas/scale_ref.py, single source) ──────────
+scale_ref.build_mannequin(location=(0.85, 0.0, 0.0),
+                          material=mat("scale_ref", (0.80, 0.20, 0.18), rough=0.5),
+                          smooth=True)
 
 # ── Stage: floor + lights + camera ────────────────────────────────────────────
 bpy.ops.mesh.primitive_plane_add(size=14, location=(0, 0, 0))
