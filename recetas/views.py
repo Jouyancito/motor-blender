@@ -103,6 +103,19 @@ def _ensure_light(scene):
     return made
 
 
+def clear_stale(out_dir, prefix):
+    """Delete `<prefix>_*.png` left by an earlier run: a view that fails to
+    render this time must not be 'satisfied' by last run's file. Returns the
+    number removed."""
+    n = 0
+    if os.path.isdir(out_dir):
+        for name in os.listdir(out_dir):
+            if name.startswith(prefix + "_") and name.endswith(".png"):
+                os.remove(os.path.join(out_dir, name))
+                n += 1
+    return n
+
+
 def orbit_capture(out_dir, prefix, objects, views=None, res=640):
     """
     Render `objects` from every view in `views` (default: all of VIEWS), framed
@@ -120,6 +133,7 @@ def orbit_capture(out_dir, prefix, objects, views=None, res=640):
     scene = bpy.context.scene
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    clear_stale(out_dir, prefix)
 
     centre, radius = _bounds(objects)
     saved = (scene.camera, scene.render.resolution_x, scene.render.resolution_y,

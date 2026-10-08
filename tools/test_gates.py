@@ -336,6 +336,19 @@ def test_scale_ref_and_views():
         check("%s no vuelve a copiar el maniqui" % gen,
               "ref_human_body" not in src and "scale_ref.build_mannequin" in src)
 
+    with tempfile.TemporaryDirectory() as tmp:
+        for n in ("g_frente.png", "g_bajo.png", "other_frente.png", "g_notes.txt"):
+            open(os.path.join(tmp, n), "wb").write(b"x")
+        removed = views.clear_stale(tmp, "g")
+        left = sorted(os.listdir(tmp))
+        check("clear_stale borra los PNG viejos del prefijo", removed == 2)
+        check("... y no toca otros prefijos ni archivos que no son PNG",
+              left == ["g_notes.txt", "other_frente.png"], str(left))
+    check("orbit_capture llama clear_stale antes de renderizar",
+          "clear_stale(out_dir, prefix)" in open(os.path.join(
+              ROOT, "recetas", "views.py"), encoding="utf-8").read().split(
+              "def orbit_capture")[1])
+
     # views: the guard, with positive controls.
     expect_no_exit("el set canonico pasa require_views", views.require_views,
                    views.VIEWS)
