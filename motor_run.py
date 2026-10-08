@@ -304,11 +304,13 @@ def step_scale(ctx):
                           reason="; ".join(req["mannequin_exempt"])
                           or "no matched family requires a mannequin")
         return
+    sz = req["size_range"] or {}
     rep = scale_ref.require_scale_evidence(
         ctx["evidence"], asset_objects=ctx["asset_objects"],
-        expected_height_m=req["height_range"])
-    if not any(r["prop"] == "asset_height_vs_source" and r["state"] == PASS
-               for r in rep.rows):
+        expected_height_m=sz.get("range_m") if sz.get("dim") == "height" else None,
+        expected_span_m=sz.get("range_m") if sz.get("dim") == "span" else None)
+    if not any(r["prop"] in ("asset_height_vs_source", "asset_span_vs_source")
+               and r["state"] == PASS for r in rep.rows):
         gap = ("asset height was NOT checked against a sourced size range "
                "(none for this family)")
         ctx["gaps"].append(gap)

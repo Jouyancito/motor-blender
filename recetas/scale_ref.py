@@ -103,7 +103,8 @@ def world_z_extent(objs):
 
 def scale_evidence_report(mannequin_height, render_paths, asset_height=None,
                           expected_height_m=None, tol=0.02, exists=os.path.isfile,
-                          size_of=os.path.getsize):
+                          size_of=os.path.getsize, asset_span=None,
+                          expected_span_m=None):
     """
     Pure core of the gate (no bpy): one row per property.
 
@@ -146,11 +147,33 @@ def scale_evidence_report(mannequin_height, render_paths, asset_height=None,
         r.add("asset_height_vs_source", state,
               "%.3f m vs sourced %.2f-%.2f m (%.0f %% of the mannequin)"
               % (asset_height, lo, hi, 100.0 * asset_height / MANNEQUIN_H))
+    if expected_span_m is not None:
+        # Wingspan / nose-to-tail length: the sourced size of flyers and
+        # animals is a HORIZONTAL extent, not a height.
+        if asset_span is None:
+            r.add("asset_span_vs_source", NOT_TESTED, "asset span not measured")
+        else:
+            lo, hi = expected_span_m
+            r.add("asset_span_vs_source", PASS if lo <= asset_span <= hi else FAIL,
+                  "%.3f m vs sourced %.2f-%.2f m" % (asset_span, lo, hi))
     return r
 
 
+def world_xy_span(objs):
+    """Widest horizontal extent (max of the X and Y world extents)."""
+    from mathutils import Vector
+    xs, ys = [], []
+    for o in objs:
+        for c in o.bound_box:
+            w = o.matrix_world @ Vector(c)
+            xs.append(w.x)
+            ys.append(w.y)
+    return max(max(xs) - min(xs), max(ys) - min(ys)) if xs else 0.0
+
+
 def require_scale_evidence(render_paths, scene=None, asset_objects=None,
-                           expected_height_m=None, verbose=True):
+                           expected_height_m=None, verbose=True,
+                           expected_span_m=None):
     """
     Fail the build unless the mannequin is in the scene at 1.80 m AND the
     renders that show it exist. Same contract as use_size.require_use_size:
@@ -168,13 +191,16 @@ def require_scale_evidence(render_paths, scene=None, asset_objects=None,
     if asset_objects:
         lo, hi = world_z_extent(asset_objects)
         ah = hi - lo
+    aspan = world_xy_span(asset_objects) if asset_objects else None
     rep = scale_evidence_report(mh, list(render_paths or []), ah,
-                                expected_height_m)
+                                expected_height_m, asset_span=aspan,
+                                expected_span_m=expected_span_m)
     if verbose:
         print(rep.render())
     hard = [row for row in rep.rows
             if row["state"] == FAIL or
-            (row["state"] == NOT_TESTED and row["prop"] != "asset_height_vs_source")]
+            (row["state"] == NOT_TESTED and row["prop"] not in
+             ("asset_height_vs_source", "asset_span_vs_source"))]
     if hard:
         raise SystemExit(
             rep.render() + "\nSIN EVIDENCIA DE ESCALA. El asset se juzga al lado "

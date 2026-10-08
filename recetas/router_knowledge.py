@@ -34,7 +34,10 @@
 #     lessons              ["LECCIONES.md#N", ...]
 #     sources              pointers backing the entry as a whole
 #     gaps                 research holes declared instead of papered over
-#     size_ranges          [{"aliases": [...], "height_m": (lo, hi), "source": ptr}]
+#     size_ranges          [{"aliases": [...], "dim": "height"|"span", "range_m": (lo, hi),
+#                            "source": ptr, "basis": str?}]   span = widest horizontal extent
+#     creature             True for living/mob families (head-noun routing: a creature
+#                          modifier before an object head makes the subject ambiguous)
 
 # Techniques ruled out for EVERYTHING, whatever family matched.
 UNIVERSAL_DISCARDED = {
@@ -111,6 +114,7 @@ CATEGORIES = {
     },
     # -------------------------------------------------------------- quelonio
     "quelonio": {
+        "creature": True,
         "aliases": ["tortuga", "turtle", "quelonio", "caparazon", "carapace"],
         "established": "carapacho construido DESDE sus escudos (_carapace.py)",
         "discarded": {
@@ -239,7 +243,9 @@ CATEGORIES = {
     },
     # ------------------------------------------------------------- mamifero
     "mamifero": {
-        "aliases": ["mamifero", "mammal", "cuadrupedo", "quadruped",
+        "creature": True,
+        "aliases": ["mamifero", "mammal", "cuadrupedo", "quadruped", "roedor",
+                    "rodent",
                     "gato", "gata", "cat", "felino", "feline",
                     "lobo", "wolf", "rata", "rat", "cabra", "goat",
                     "oveja", "sheep"],
@@ -277,8 +283,12 @@ CATEGORIES = {
         "required_views": list(_ALL_VIEWS),
         "use_size": _MOB_SIZES,
         "size_ranges": [
-            {"aliases": ["lobo", "wolf"], "height_m": (0.66, 0.84),
+            {"aliases": ["lobo", "wolf"], "dim": "height", "range_m": (0.66, 0.84),
              "source": "game:wolf/_synthesis.md:14|Alzada"},
+            {"aliases": ["rata", "rat"], "dim": "span", "range_m": (0.255, 0.52),
+             "source": "game:rat_rodent/_synthesis.md:8-16|Cabeza + cuerpo",
+             "basis": "head+body 15-28 cm plus tail 10.5-24 cm, summed from the "
+                      "two sourced ranges (nose-to-tail-tip length)"},
         ],
         "lessons": ["LECCIONES.md#4", "LECCIONES.md#5", "LECCIONES.md#11"],
         "sources": [
@@ -424,6 +434,248 @@ CATEGORIES = {
             "TECNICAS.md:61-73|scatter_biome",
             "recetas/biome_facet.py:1-18|planar-decomposition",
             "recetas/use_size.py:13-17|tree_pack",
+        ],
+    },
+
+    # -------------------------------------------------------------- construct
+    "construct": {
+        "creature": True,
+        "aliases": ["golem", "constructo", "construct"],
+        "established": ("bpy bespoke (gen_*.py), malla static con la pose en "
+                        "Godot; cada masa corporal = NUCLEO grande + satelites "
+                        "presionados (~40% embebidos) de tamano variado; cantos "
+                        "redondeados tipo river-stone con erosion organica; el "
+                        "musgo es propiedad de la malla completa desde el dormant"),
+        "discarded": {
+            "perfect_polyhedra_stones": (
+                "hull facetado de aristas rectas largas: todas las piedras "
+                "siguen leyendo como poliedros limpios; superficie = hull + "
+                "erosion organica (subdiv + noise por normal)"),
+            "sharp_noise_shard_rocks": (
+                "el generador de rocas con noise displacement agresivo da "
+                "lascas afiladas; las refs muestran cantos REDONDEADOS, nunca "
+                "puntas, ni en estilo agresivo/cartoon"),
+            "clean_stones_then_moss": (
+                "rocas limpias que de repente tienen musgo al ensamblarse: el "
+                "musgo/color es propiedad de la malla completa desde el dormant"),
+            "shader_nodes_export": (
+                "los nodos de shader no sobreviven glTF: baseColorFactor blanco "
+                "sin fallar (mobs blancos en Godot); hornear a FLOAT_COLOR"),
+        },
+        "discarded_sources": {
+            "perfect_polyhedra_stones":
+                "game:golem/_synthesis.md:85-100|poliedros limpios",
+            "sharp_noise_shard_rocks": "game:golem/_synthesis.md:58-63|lascas afiladas",
+            "clean_stones_then_moss": "game:golem/_synthesis.md:64-67|no rocas limpias",
+            "shader_nodes_export": "LECCIONES.md#9",
+        },
+        "must_read": [
+            "_references/golem/_synthesis.md (+ golem_floating)",
+            "_bestiary_visual_bible.md §6.5 (ficha del golem)",
+        ],
+        "structural_note": (
+            "bottom-weighted y encorvado (base ancha, peso); DOS posturas: "
+            "juggernaut erguido de brazos largos o knuckle-drag sobre nudillos; "
+            "el diferenciador es un arbol/arbusto creciendo de cabeza o espalda; "
+            "nucleo que brilla en el pecho; construct = angular, simetrico-ish, "
+            "pesado, con un lado mas roto"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": ["no per-part STRUCTURE table (plano/angulo/limite) for the golem "
+                 "limbs in _references/golem (LECCIONES 5)",
+                 "golem scale is declared as '4,0 m' in two docs but not whether "
+                 "that is height; the +-20% range below is an initial tolerance"],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "size_ranges": [
+            {"aliases": ["golem", "constructo", "construct"], "dim": "height",
+             "range_m": (3.2, 4.8),
+             "source": "game:wolf/_synthesis.md:24|golem (4,0 m)",
+             "basis": "4.0 m sourced; +-20% is an initial, uncalibrated tolerance"},
+        ],
+        "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
+        "sources": [
+            "game:golem/_synthesis.md:20-23|bottom-weighted",
+            "game:golem/_synthesis.md:101-106|NUCLEO",
+            "gameart:_bestiary_visual_bible.md:100|Construct",
+            "gameart:_bestiary_visual_bible.md:149|bpy bespoke",
+            "game:wolf/_synthesis.md:24|golem (4,0 m)",
+        ],
+    },
+    # ------------------------------------------------------------------ blob
+    "blob": {
+        "creature": True,
+        "aliases": ["slime", "babosa", "limo", "gel", "blob", "amorfo"],
+        "established": ("malla bpy (icosphere/UV sphere + displace) con color en "
+                        "una capa FLOAT_COLOR horneada; el squash-stretch va en "
+                        "shader/tween de Godot, no en la malla rigida; rasgos = "
+                        "RELIEVE, no piezas"),
+        "discarded": {
+            "shader_nodes_gel": (
+                "sombrear el gel con nodos procedurales (TexNoise/Voronoi/"
+                "LayerWeight): glTF los descarta y el GLB llega como domo "
+                "BLANCO sin tinte, mientras el showcase se ve verde"),
+            "slime_teeth_nose_pupils": (
+                "pupilas, dientes o nariz en el slime: nunca; el slime con "
+                "dientes ya fue rechazado (rasgos = relieve)"),
+        },
+        "discarded_sources": {
+            "shader_nodes_gel": "gametools:slime/build_slime.py:17-27|WHITE dome",
+            "slime_teeth_nose_pupils":
+                "game:slime_tensura/_synthesis.md:58-64|Nada de pupilas",
+        },
+        "must_read": ["_references/slime_tensura/_synthesis.md",
+                      "_bestiary_visual_bible.md §3 y §6.6"],
+        "structural_note": (
+            "blob/amorfo: icosphere achatada sin extremidades, bottom-weighted; "
+            "se individualiza por el color translucido que 'comio'; el boss "
+            "(king) es la culminacion ecologica, sobresaturado, escala ~3-4x "
+            "del slime comun"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": ["no absolute size source for the common slime (only ratios)",
+                 "king scale: bible says ~3-4x the common slime "
+                 "(_bestiary_visual_bible.md:299) but build_king_slime.py uses "
+                 "S = 2.2 (line 18): the two disagree"],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
+        "sources": [
+            "gameart:_bestiary_visual_bible.md:96|Blob",
+            "gameart:_bestiary_visual_bible.md:150|jiggle",
+            "gameart:_bestiary_visual_bible.md:299|3-4x",
+            "gametools:king_slime/build_king_slime.py:18|boss scale",
+            "gametools:slime/build_slime.py:100|TRI_BUDGET",
+        ],
+    },
+    # ------------------------------------------------------------- artropodo
+    "artropodo": {
+        "creature": True,
+        "aliases": ["avispa", "wasp", "insecto", "insect", "artropodo",
+                    "arthropod", "escorpion", "scorpion"],
+        "established": ("cuerpo segmentado (3 segmentos) con alas en shape keys; "
+                        "vuela flotando sobre el plano del suelo (hover), "
+                        "individualizado por el arma-cola o las franjas de "
+                        "alarma; color en FLOAT_COLOR"),
+        "discarded": {
+            "shader_nodes_export": (
+                "los nodos de shader no sobreviven glTF: la avispa llego "
+                "BLANCA a Godot (2 de 3 primitivas sin color)"),
+        },
+        "discarded_sources": {"shader_nodes_export": "LECCIONES.md#9"},
+        "must_read": ["_bestiary_visual_bible.md §3 y §4",
+                      "game/tools/blender/wasp/build_wasp.py"],
+        "structural_note": (
+            "artropodo: segmentado, patas multiples, el quiebre es el arma-cola "
+            "o las pinzas; la avispa es artropodo VOLADOR de colonia/nido con "
+            "franjas de alarma; 2 pares de alas"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": ["no _references folder for insects/arthropods",
+                 "no real-world or game size for the wasp in the corpus",
+                 "no per-part STRUCTURE table for legs/wings (LECCIONES 5, 11)"],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
+        "sources": [
+            "gameart:_bestiary_visual_bible.md:99|Artr",
+            "gameart:_bestiary_visual_bible.md:169|avispa",
+            "gametools:wasp/build_wasp.py:1-3|3-segment insect body",
+            "gametools:wasp/build_wasp.py:26|HOVER_Z",
+        ],
+    },
+    # -------------------------------------------------------------- serpiente
+    "serpiente": {
+        "creature": True,
+        "aliases": ["serpiente", "snake", "culebra", "vibora"],
+        "established": ("reptil SIN extremidades definido por el MOVIMIENTO: "
+                        "tubo barrido sobre una espina en S, cola fina, cabeza "
+                        "en cuña del mismo tubo; ondulacion = dos shape keys "
+                        "laterales en fase"),
+        "discarded": {
+            "shader_nodes_export": (
+                "los nodos de shader no sobreviven glTF: la serpiente llego "
+                "BLANCA a Godot (1 de 1 primitivas sin color)"),
+        },
+        "discarded_sources": {"shader_nodes_export": "LECCIONES.md#9"},
+        "must_read": ["game/tools/blender/snake/build_snake.py",
+                      "_bestiary_visual_bible.md §3 y §5"],
+        "structural_note": (
+            "sin patas ni malla de cabeza aparte: la cabeza es el mismo tubo, "
+            "mas ancha y chata; se desliza con una onda S viajera "
+            "(cos(t)*wave_a + sin(t)*wave_b); acento de veneno"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": ["no _references folder for snakes (no real-world size either)",
+                 "no per-part STRUCTURE table (LECCIONES 5, 11)"],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "lessons": ["LECCIONES.md#2", "LECCIONES.md#9", "LECCIONES.md#11"],
+        "sources": [
+            "gametools:snake/build_snake.py:1-8|limbless reptile",
+            "gametools:snake/build_snake.py:11-14|slither",
+            "gameart:_bestiary_visual_bible.md:148|serpiente",
+            "gameart:_bestiary_visual_bible.md:166|acento veneno",
+        ],
+    },
+    # ------------------------------------------------------------------- ave
+    "ave": {
+        "creature": True,
+        "aliases": ["ave", "pajaro", "bird", "cuervo", "crow", "corvid",
+                    "halcon", "hawk", "aguila", "eagle"],
+        "established": ("cuerpo fusiforme con pecho, cabeza diferenciada y pico "
+                        "de geometria real, alas anchas; volador: se mide por "
+                        "ENVERGADURA contra el poste de 1.80 m, no por altura; "
+                        "vuela flotando sobre el plano del suelo"),
+        "discarded": {
+            "hawk_falco_buteo_mix": (
+                "mezclar halcon peregrino (falco) y aguilucho (buteo): son dos "
+                "siluetas opuestas y mezclarlas da un pajaro sin lectura; hay "
+                "que elegir uno"),
+            "dove_sized_corvid": (
+                "modelar el cuervo del tamano de una paloma: se pierde la "
+                "presencia que justifica ponerlo (1.30 m de envergadura)"),
+            "shader_nodes_export": (
+                "los nodos de shader no sobreviven glTF: el pajaro llego "
+                "BLANCO a Godot (2 de 5 primitivas sin color)"),
+        },
+        "discarded_sources": {
+            "hawk_falco_buteo_mix": "game:hawk/_synthesis.md:15-17|Hay que elegir uno",
+            "dove_sized_corvid": "game:corvid/_synthesis.md:14-16|paloma",
+            "shader_nodes_export": "LECCIONES.md#9",
+        },
+        "must_read": ["_references/corvid/_synthesis.md",
+                      "_references/hawk/_synthesis.md"],
+        "structural_note": (
+            "familia volador (silueta en el cielo): contraste por envergadura + "
+            "cola; cuervo: pico grueso largo y curvo, alas largas y apuntadas; "
+            "halcon/buteo: pico corto ganchudo, garras visibles en silueta; el "
+            "volador alto sube la escala para verse a 10-14 m (anotarlo)"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": ["no per-part STRUCTURE table for wings/legs (LECCIONES 5, 11)"],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "size_ranges": [
+            {"aliases": ["cuervo", "crow", "corvid"], "dim": "span",
+             "range_m": (1.15, 1.53),
+             "source": "game:corvid/_synthesis.md:11|Envergadura"},
+            {"aliases": ["halcon", "hawk", "aguila", "eagle"], "dim": "span",
+             "range_m": (1.10, 1.22),
+             "source": "game:hawk/_synthesis.md:11|Envergadura",
+             "basis": "falco 1.10 m .. buteo 1.22 m, both sourced"},
+        ],
+        "lessons": ["LECCIONES.md#2", "LECCIONES.md#9"],
+        "sources": [
+            "game:corvid/_synthesis.md:10-16|Envergadura",
+            "game:hawk/_synthesis.md:8-19|Envergadura",
+            "gameart:_bestiary_visual_bible.md:98|Volador",
+            "gametools:bird_prey/build_bird.py:1-3|bird of prey",
         ],
     },
 }

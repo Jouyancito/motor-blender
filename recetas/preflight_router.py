@@ -176,6 +176,16 @@ def route_all(text):
                     suffix.append((m.start(), category))
                 if m.start() == 0:
                     prefix.append((m.start(), category))
+    # Creature modifier + object head ("cat tree"): is it a cat or a tree? The
+    # router cannot know, and guessing the head would hand a cat-furniture
+    # subject the biome rules. Unknown, fail closed.
+    OBJECT = ("bioma", "arquitectura", "prop")
+    if suffix and prefix and len(phrase.split()) > 1:
+        heads = {c for _p, c in suffix}
+        mods = {c for _p, c in prefix}
+        if (heads & set(OBJECT)) and any(
+                CATEGORIES[c].get("creature") for c in mods - heads):
+            return []
     chosen = suffix or prefix
     seen, out = set(), []
     for _pos, category in sorted(chosen):
@@ -257,7 +267,7 @@ def requirements(subject, rules=None):
         structure          [(abs_ref_dir, [parts])] one per family with a spec
         declared_parts     parts families declare but have no spec dir for
         gaps               declared research holes of every matched family
-        height_range       sourced (lo, hi) for the asset, or None
+        size_range         {dim: height|span, range_m: (lo, hi)} sourced, or None
         lessons            lesson pointers of every matched family
     """
     rules = rules if rules is not None else route_all(subject)
@@ -265,7 +275,7 @@ def requirements(subject, rules=None):
     req = {"categories": [r.category for r in rules], "mannequin": False,
            "mannequin_exempt": [], "views": [], "use_size": None,
            "use_size_exempt": [], "structure": [], "declared_parts": [],
-           "gaps": [], "height_range": None, "lessons": []}
+           "gaps": [], "size_range": None, "lessons": []}
     sizes = set()
     for r in rules:
         d = r.data
@@ -291,7 +301,9 @@ def requirements(subject, rules=None):
         req["lessons"].extend(d.get("lessons", []))
         for sr in d.get("size_ranges", []):
             if any(_alias_pattern(a).search(low) for a in sr["aliases"]):
-                req["height_range"] = tuple(sr["height_m"])
+                req["size_range"] = {"dim": sr["dim"],
+                                     "range_m": tuple(sr["range_m"]),
+                                     "basis": sr.get("basis", "")}
     if sizes:
         req["use_size"] = {"sizes": sorted(sizes, reverse=True)}
     return req

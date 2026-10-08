@@ -332,6 +332,17 @@ def test_scale_ref_and_views():
                                           exists=ok, size_of=big)
     check("altura del asset fuera del rango -> FAIL",
           rep.rows[2]["state"] == FAIL)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_span=1.30,
+                                          expected_span_m=(1.15, 1.53),
+                                          exists=ok, size_of=big)
+    check("envergadura dentro del rango CON fuente -> PASS",
+          rep.rows[-1]["prop"] == "asset_span_vs_source"
+          and rep.rows[-1]["state"] == PASS)
+    rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_span=0.30,
+                                          expected_span_m=(1.15, 1.53),
+                                          exists=ok, size_of=big)
+    check("paloma de 0.30 m de envergadura (cuervo) -> FAIL",
+          rep.rows[-1]["state"] == FAIL)
     rep = scale_ref.scale_evidence_report(1.80, ["a.png"], asset_height=1.30,
                                           exists=ok, size_of=big)
     check("sin rango con fuente la altura queda NOT_TESTED (no se inventa)",
@@ -457,7 +468,8 @@ def test_router_knowledge():
 
     cats = router_knowledge.CATEGORIES
     for needed in ("pelo", "quelonio", "material_procedural", "export_godot",
-                   "mamifero", "prop", "arquitectura", "bioma"):
+                   "mamifero", "prop", "arquitectura", "bioma", "construct",
+                   "blob", "artropodo", "serpiente", "ave"):
         check("existe la categoria %s" % needed, needed in cats)
 
     n_ok = n_unchecked = 0
@@ -482,6 +494,11 @@ def test_router_knowledge():
             ok_views = False
         check("%s: required_views validas y con los angulos ingratos" % name,
               ok_views)
+        for sr in d.get("size_ranges", []):
+            check("%s: size_range %s trae dim valida y rango ordenado"
+                  % (name, sr["aliases"][0]),
+                  sr["dim"] in ("height", "span")
+                  and sr["range_m"][0] < sr["range_m"][1])
         check("%s: cada tecnica descartada cita su fuente" % name,
               set(d["discarded"]) == set(d["discarded_sources"]))
         ptrs = list(d["sources"]) + list(d["discarded_sources"].values()) \
@@ -980,13 +997,38 @@ def test_router():
     expect_no_exit("... asi que una tecnica de tortuga no frena un sujeto pelo",
                    preflight_router.require_technique, "pelo de la tortuga",
                    "uv_sphere_painted", verbose=False)
-    for subj in ("golem de piedra", "robot WALL-E", "astrolabio con cat",
-                 "astrolabio de piedra", "golem with a rock", "mice"):
+    for subj in ("robot WALL-E", "astrolabio con cat", "astrolabio de piedra",
+                 "cat tree", "mice"):
         check("modificador NO asigna familia: %r queda desconocido" % subj,
               not preflight_router.route(subj).matched)
         expect_exit("... y require_technique frena (%r)" % subj,
                     preflight_router.require_technique, subj, "x",
                     verbose=False)
+    # Review A: a pre-modifier must not win over the head noun.
+    for subj in ("rock golem", "stone golem", "golem de piedra", "golem with a rock",
+                 "mossy stone golem"):
+        check("%r -> construct (la cabeza es golem, no la piedra)" % subj,
+              [r.category for r in preflight_router.route_all(subj)] == ["construct"])
+    check("'wood door' -> arquitectura (modificador material no gana)",
+          [r.category for r in preflight_router.route_all("wood door")]
+          == ["arquitectura"])
+    check("'gato gris' -> mamifero",
+          [r.category for r in preflight_router.route_all("gato gris")]
+          == ["mamifero"])
+    check("'cat tree' es ambiguo (criatura + objeto) -> desconocido, no bioma",
+          not preflight_router.route("cat tree").matched)
+    check("control: 'cat hair' -> pelo (criatura como modificador de pelo si vale)",
+          preflight_router.route("cat hair").category == "pelo")
+    # Review B: the Dungeon Party mobs have a family.
+    for subj, fam in (("golem", "construct"), ("king_slime", "blob"),
+                      ("slime", "blob"), ("babosa", "blob"), ("limo", "blob"),
+                      ("wasp", "artropodo"), ("avispa", "artropodo"),
+                      ("snake", "serpiente"), ("serpiente", "serpiente"),
+                      ("bird", "ave"), ("pájaro", "ave"), ("hawk", "ave"),
+                      ("cuervo", "ave"), ("roedor", "mamifero"),
+                      ("rata gris", "mamifero")):
+        check("%r -> %s" % (subj, fam), preflight_router.route(subj).category == fam,
+              str(preflight_router.route(subj).category))
     check("irregular 'wolves' -> mamifero",
           preflight_router.route("wolves").category == "mamifero")
     check("irregular 'mice' es desconocido A PROPOSITO (no hay alias raton)",
@@ -1037,10 +1079,26 @@ def test_router_requirements():
     check("gato declara el hueco de investigacion felina",
           any("feline" in g for g in req["gaps"]))
     req = preflight_router.requirements("lobo")
-    check("lobo trae el rango de altura CON fuente", req["height_range"]
-          == (0.66, 0.84))
+    check("lobo trae el rango de altura CON fuente", req["size_range"]
+          == {"dim": "height", "range_m": (0.66, 0.84), "basis": ""})
     check("gato NO inventa rango de altura (no hay fuente)",
-          preflight_router.requirements("gato")["height_range"] is None)
+          preflight_router.requirements("gato")["size_range"] is None)
+    req = preflight_router.requirements("golem")
+    check("golem: altura con fuente (4.0 m +-20% inicial)",
+          req["size_range"]["dim"] == "height"
+          and req["size_range"]["range_m"] == (3.2, 4.8)
+          and "initial" in req["size_range"]["basis"])
+    check("cuervo: envergadura (span) con fuente",
+          preflight_router.requirements("cuervo")["size_range"]["dim"] == "span")
+    check("rata: largo total (span) derivado de dos rangos con fuente",
+          preflight_router.requirements("rata")["size_range"]["range_m"]
+          == (0.255, 0.52))
+    check("slime/avispa/serpiente: SIN tamano inventado, hueco declarado",
+          all(preflight_router.requirements(x)["size_range"] is None
+              for x in ("slime", "avispa", "serpiente")))
+    check("el hueco de king-vs-S=2.2 queda declarado en blob",
+          any("S = 2.2" in g for g in
+              preflight_router.requirements("king slime")["gaps"]))
     req = preflight_router.requirements("material de hormigon")
     check("material: maniqui exento con razon, sin use_size",
           not req["mannequin"] and req["mannequin_exempt"]
