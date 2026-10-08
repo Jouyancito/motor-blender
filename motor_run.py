@@ -168,7 +168,14 @@ def step_generator(ctx):
     os.environ["MOTOR_OUT_DIR"] = ctx["out"]
     sys.argv = [ctx["generator"], "--"] + ctx["gen_args"]
     t0 = time.time()
-    runpy.run_path(ctx["generator"], run_name="__main__")
+    try:
+        runpy.run_path(ctx["generator"], run_name="__main__")
+    except SystemExit as exc:
+        # A generator that calls sys.exit(0) used to end the whole process with
+        # rc=0 before evidence, scale, use_size or the verdict ran: a clean-looking
+        # exit that skipped every later gate. Any self-exit is a failed build.
+        raise SystemExit("motor_run: the generator exited by itself (code %r) "
+                         "before the gates after it could run" % (exc.code,))
     ctx["report"].add("generator", PASS, "%s ran in %.1fs"
                       % (os.path.basename(ctx["generator"]), time.time() - t0))
 
@@ -190,33 +197,42 @@ def _asset_objects(ctx):
     return objs
 
 
-def step_evidence(ctx):
-    import bpy
+def _place_mannequin(assets):
+    """Diagonal front-right of the asset: beside it in the frente view AND beside
+    it in the perfil view (straight +X would hide the asset behind the mannequin
+    in the profile shot). Reuses a mannequin the generator already built."""
     from mathutils import Vector
+    parts = scale_ref.find_mannequin()
+    if parts:
+        return parts
+    pts = [o.matrix_world @ Vector(c) for o in assets for c in o.bound_box]
+    return scale_ref.build_mannequin(
+        location=(max(p.x for p in pts) + 0.7 + scale_ref.BODY_R,
+                  min(p.y for p in pts) - 0.7 - scale_ref.BODY_R,
+                  min(p.z for p in pts)))
+
+
+def _save_blend(path):
+    import bpy
+    bpy.ops.wm.save_as_mainfile(filepath=path)
+
+
+def step_evidence(ctx):
     req = ctx["req"]
     assets = _asset_objects(ctx)
     ctx["asset_objects"] = assets
     frame = list(assets)
-    if req["mannequin"]:
-        parts = scale_ref.find_mannequin()
-        if not parts:
-            pts = [o.matrix_world @ Vector(c) for o in assets for c in o.bound_box]
-            # Diagonal front-right of the asset: beside it in the frente view
-            # AND beside it in the perfil view (straight +X would hide the
-            # asset behind the mannequin in the profile shot).
-            hi_x = max(p.x for p in pts)
-            lo_y = min(p.y for p in pts)
-            lo_z = min(p.z for p in pts)
-            parts = scale_ref.build_mannequin(
-                location=(hi_x + 0.7 + scale_ref.BODY_R,
-                          lo_y - 0.7 - scale_ref.BODY_R, lo_z))
-        frame += parts
+    # Scale evidence is never skipped for an unknown subject: no family means
+    # "unregistered", not "exempt from being seen next to a person".
+    if req["mannequin"] or not req["categories"]:
+        req["mannequin"] = True
+        req["use_size"] = req["use_size"] or {"sizes": [512, 256, 128]}
+        frame += _place_mannequin(assets)
     labels = req["views"] or [v[0] for v in views.VIEWS]
     chosen = views.resolve_views(labels)
     ev_dir = os.path.join(ctx["out"], "evidence")
     ctx["evidence"] = views.orbit_capture(ev_dir, ctx["stem"], frame, chosen)
-    blend = os.path.join(ctx["out"], "%s_motor.blend" % ctx["stem"])
-    bpy.ops.wm.save_as_mainfile(filepath=blend)
+    _save_blend(os.path.join(ctx["out"], "%s_motor.blend" % ctx["stem"]))
     ctx["report"].add("views", PASS, "%d orbit shots in %s"
                       % (len(ctx["evidence"]), ev_dir))
 
@@ -267,11 +283,24 @@ STEPS = [
 ]
 
 
+# The report row each default step must leave behind: a step that returns
+# without recording a result did not run its gate.
+ROW_FOR = {"technique": "technique", "structure": "structure",
+           "generator": "generator", "evidence": "views", "scale": "scale",
+           "use_size": "use_size"}
+
+
 def run(argv, steps=None):
     ctx = make_ctx(argv)
+    ctx["completed"] = []
     for name, fn in (steps or STEPS):
         print("\n[motor_run] step: %s" % name)
         fn(ctx)
+        row = ROW_FOR.get(name)
+        if row and not any(r["prop"] == row for r in ctx["report"].rows):
+            raise SystemExit("motor_run: step %r returned without recording %r"
+                             % (name, row))
+        ctx["completed"].append(name)
     report = ctx["report"]
     print(report.render())
     os.makedirs(ctx["out"], exist_ok=True)
@@ -291,16 +320,18 @@ def run(argv, steps=None):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     try:
-        run(argv)
+        ctx = run(argv)
+        if ctx["completed"] != [n for n, _ in STEPS]:
+            raise SystemExit("motor_run: not every step ran: %r" % ctx["completed"])
     except SystemExit as exc:
         # Blender's --python-exit-code only fires on exceptions; make a failed
         # gate exit non-zero explicitly.
-        if exc.code not in (0, None):
-            print(exc.code if isinstance(exc.code, str) else
-                  "motor_run: exit %r" % (exc.code,), file=sys.stderr)
-            sys.stderr.flush()
-            os._exit(1)
-        raise
+        # Never exit 0 from here: reaching this handler means a gate or the
+        # generator ended the run early.
+        print(exc.code if isinstance(exc.code, str) else
+              "motor_run: exit %r" % (exc.code,), file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(1)
 
 
 if __name__ == "__main__":

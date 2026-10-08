@@ -505,7 +505,7 @@ WIRING = {
                        "preflight_router.requirements"],
     "step_structure": ["asset_spec.check_structure"],
     "step_generator": ["runpy.run_path"],
-    "step_evidence": ["views.orbit_capture", "scale_ref.build_mannequin",
+    "step_evidence": ["views.orbit_capture", "_place_mannequin",
                       "views.resolve_views"],
     "step_scale": ["scale_ref.require_scale_evidence"],
     "step_use_size": ["use_size.require_use_size"],
@@ -546,6 +546,93 @@ def _steps_order(source):
     return []
 
 
+EXPECTED_FUNCS = {"technique": "step_technique", "structure": "step_structure",
+                  "generator": "step_generator", "evidence": "step_evidence",
+                  "scale": "step_scale", "use_size": "step_use_size"}
+
+
+def _steps_wired(steps):
+    """Each STEPS entry must be the real function for its label (a lambda or a
+    swapped function under the right label is not wiring)."""
+    return [(n, getattr(f, "__name__", "?")) for n, f in steps
+            if EXPECTED_FUNCS.get(n) != getattr(f, "__name__", "?")
+            or f is not getattr(motor_run, EXPECTED_FUNCS.get(n, ""), None)]
+
+
+def _early_return_before_gate(source):
+    """Functions whose gate call sits AFTER an unconditional return/raise at
+    the top level of the body (dead gate)."""
+    bad = []
+    for node in ast.parse(source).body:
+        if not (isinstance(node, ast.FunctionDef) and node.name in WIRING):
+            continue
+        for i, stmt in enumerate(node.body):
+            seg = ast.Module(body=[stmt], type_ignores=[])
+            dotted = set()
+            for sub in ast.walk(seg):
+                if isinstance(sub, ast.Call):
+                    f, parts = sub.func, []
+                    while isinstance(f, ast.Attribute):
+                        parts.append(f.attr)
+                        f = f.value
+                    if isinstance(f, ast.Name):
+                        parts.append(f.id)
+                    dotted.add(".".join(reversed(parts)))
+            if any(c in dotted for c in WIRING[node.name]):
+                break
+            if isinstance(stmt, (ast.Return, ast.Raise)):
+                bad.append(node.name)
+                break
+    return bad
+
+
+class _Obj:
+    """Stand-in for a bpy object in the Blender-free behaviour tests."""
+    name = "stub"
+
+
+def _install_stubs(tmp, spies):
+    """Patch ONLY the Blender-touching edges; every step function and every
+    gate call site stays real, and the gates are replaced by spies so the test
+    can prove they are reached."""
+    saved = {}
+
+    def patch(obj, attr, value):
+        saved[(obj, attr)] = getattr(obj, attr)
+        setattr(obj, attr, value)
+
+    def orbit(out_dir, prefix, frame, chosen):
+        os.makedirs(out_dir, exist_ok=True)
+        paths = []
+        for v in chosen:
+            pth = os.path.join(out_dir, "%s_%s.png" % (prefix, v[0]))
+            with open(pth, "wb") as fh:
+                fh.write(b"png")
+            paths.append(pth)
+        spies.append(("orbit", len(chosen)))
+        return paths
+
+    def scale_gate(paths, **kw):
+        spies.append(("scale", len(paths)))
+        return Report("SCALE").add("mannequin_in_scene", PASS)
+
+    def size_gate(path, sizes, out=None):
+        spies.append(("use_size", tuple(sizes)))
+        return out
+
+    patch(motor_run, "_asset_objects", lambda ctx: [_Obj()])
+    patch(motor_run, "_place_mannequin", lambda a: spies.append(("mannequin", 1)) or [_Obj()])
+    patch(motor_run, "_save_blend", lambda p: spies.append(("save", 1)))
+    patch(motor_run.views, "orbit_capture", orbit)
+    patch(motor_run.scale_ref, "require_scale_evidence", scale_gate)
+    patch(motor_run.use_size, "require_use_size", size_gate)
+
+    def restore():
+        for (obj, attr), val in saved.items():
+            setattr(obj, attr, val)
+    return restore
+
+
 def test_motor_run():
     print("\nmotor_run.py -- wiring (a gate that stops being called must be loud)")
     with open(os.path.join(ROOT, "motor_run.py"), encoding="utf-8") as fh:
@@ -555,78 +642,119 @@ def test_motor_run():
     check("motor_run llama a TODOS los gates", not miss, "; ".join(miss))
     check("el orden de pasos es technique>structure>generator>evidence>scale>use_size",
           _steps_order(src) == ORDER, str(_steps_order(src)))
+    check("cada entrada de STEPS es la funcion real de su etiqueta",
+          not _steps_wired(motor_run.STEPS), str(_steps_wired(motor_run.STEPS)))
+    check("ningun gate queda detras de un return/raise incondicional",
+          not _early_return_before_gate(src), str(_early_return_before_gate(src)))
 
-    # Controls: the detector must see a gate being unwired.
-    unwired = src.replace("use_size.require_use_size(", "print(")
-    check("control: detecta require_use_size removido",
-          any("require_use_size" in m for m in _missing_wiring(unwired)))
-    unwired = src.replace("scale_ref.require_scale_evidence(", "print(")
-    check("control: detecta require_scale_evidence removido",
-          any("require_scale_evidence" in m for m in _missing_wiring(unwired)))
-    unwired = src.replace("preflight_router.require_technique(", "print(")
-    check("control: detecta require_technique removido",
-          any("require_technique" in m for m in _missing_wiring(unwired)))
-    unwired = src.replace("asset_spec.check_structure(", "print(")
-    check("control: detecta check_structure removido",
-          any("check_structure" in m for m in _missing_wiring(unwired)))
+    # Mutation controls: the detectors must SEE each way of unwiring a gate.
+    for gate in ("use_size.require_use_size(", "scale_ref.require_scale_evidence(",
+                 "preflight_router.require_technique(", "asset_spec.check_structure("):
+        check("control: detecta %s removido" % gate.split("(")[0],
+              bool(_missing_wiring(src.replace(gate, "print("))))
     reordered = src.replace('("technique", step_technique),\n    ("structure", '
                             'step_structure),', '("structure", step_structure),\n'
                             '    ("technique", step_technique),')
-    check("control: detecta pasos reordenados",
-          _steps_order(reordered) != ORDER)
+    check("control: detecta pasos reordenados", _steps_order(reordered) != ORDER)
+    lam = [(n, (lambda c: None) if n == "scale" else f) for n, f in motor_run.STEPS]
+    check("control: detecta ('scale', lambda) en STEPS", bool(_steps_wired(lam)))
+    dead = src.replace("def step_scale(ctx):\n", "def step_scale(ctx):\n    return\n", 1)
+    check("control: detecta un return antes de require_scale_evidence",
+          "step_scale" in _early_return_before_gate(dead))
+    check("control: la fuente sin mutar no dispara el detector de return",
+          "step_scale" not in _early_return_before_gate(src))
 
-    # Behaviour, no Blender: bad inputs stop BEFORE the generator runs.
+    # Behaviour through the REAL motor_run.STEPS, no Blender.
     with tempfile.TemporaryDirectory() as tmp:
-        gen = os.path.join(tmp, "g.py")
-        with open(gen, "w", encoding="utf-8") as fh:
-            fh.write("# empty generator\n")
-        ran = []
+        def gen(name, body):
+            path = os.path.join(tmp, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            return path
 
-        def fake_generator(ctx):
-            ran.append(ctx["subject"])
+        ok_gen = gen("ok.py", "RAN = True\n")
+        exit0_gen = gen("ex.py", "import sys\nsys.exit(0)\n")
+        raise0_gen = gen("rz.py", "raise SystemExit(0)\n")
+        boom_gen = gen("bm.py", "raise RuntimeError('boom')\n")
+        out = os.path.join(tmp, "out")
+        spies = []
+        restore = _install_stubs(tmp, spies)
 
-        def steps(extra=None):
-            return [("technique", motor_run.step_technique),
-                    ("structure", motor_run.step_structure),
-                    ("generator", fake_generator)]
-
-        def go(subject, *opts, sidecar=None):
-            ran.clear()
+        def go(generator, subject, *opts, sidecar=None, steps=None):
+            spies.clear()
+            side = os.path.splitext(generator)[0] + ".motor.json"
             if sidecar is not None:
-                with open(os.path.join(tmp, "g.motor.json"), "w",
-                          encoding="utf-8") as fh:
+                with open(side, "w", encoding="utf-8") as fh:
                     json.dump(sidecar, fh)
-            elif os.path.exists(os.path.join(tmp, "g.motor.json")):
-                os.remove(os.path.join(tmp, "g.motor.json"))
-            return motor_run.run([gen, subject, "--motor-out",
-                                  os.path.join(tmp, "out")] + list(opts),
-                                 steps=steps())
+            elif os.path.exists(side):
+                os.remove(side)
+            return motor_run.run([generator, subject, "--motor-out", out]
+                                 + list(opts), steps=steps)
 
-        expect_exit("sujeto desconocido -> frena",
-                    go, "astrolabio de bronce", "--motor-technique", "x")
-        check("... y el generador NO corrio", ran == [])
-        expect_exit("sin tecnica declarada -> frena", go, "gato gris")
-        check("... y el generador NO corrio (sin tecnica)", ran == [])
-        expect_exit("tecnica descartada -> frena", go, "pelo del guerrero",
-                    "--motor-technique", "polygon_shells")
-        check("... y el generador NO corrio (descartada)", ran == [])
-        expect_exit("sin partes moviles ni exencion -> frena",
-                    go, "gato gris", "--motor-technique", "x")
-        check("... y el generador NO corrio (sin estructura)", ran == [])
-        expect_exit("tortuga: 'tail' sin fila de estructura -> frena",
-                    go, "tortuga", "--motor-technique", "x")
-        check("... y el generador NO corrio (parte sin investigar)", ran == [])
-        expect_exit("exencion SIN razon no cuenta como exencion",
-                    go, "gato gris", "--motor-technique", "x",
-                    sidecar={"structure": {"exempt": ""}})
-        ctx = go("gato gris", "--motor-technique", "x",
-                 sidecar={"structure": {"exempt": "placeholder sin anatomia"}})
-        check("con exencion razonada el generador SI corre", ran == ["gato gris"])
-        rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
-        check("la exencion queda NOT_APPLICABLE en el veredicto",
-              rows.get("structure") == NOT_APPLICABLE)
-        check("el veredicto se escribio a disco",
-              os.path.isfile(os.path.join(tmp, "out", "motor_verdict.json")))
+        exempt = {"structure": {"exempt": "placeholder sin anatomia"}}
+        try:
+            expect_exit("sujeto desconocido -> frena",
+                        go, ok_gen, "astrolabio de bronce", "--motor-technique", "x")
+            expect_exit("sin tecnica declarada -> frena", go, ok_gen, "gato gris")
+            expect_exit("tecnica descartada -> frena", go, ok_gen,
+                        "pelo del guerrero", "--motor-technique", "polygon_shells")
+            expect_exit("sin partes moviles ni exencion -> frena",
+                        go, ok_gen, "gato gris", "--motor-technique", "x")
+            expect_exit("tortuga: 'tail' sin fila de estructura -> frena",
+                        go, ok_gen, "tortuga", "--motor-technique", "x")
+            expect_exit("exencion SIN razon no cuenta",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar={"structure": {"exempt": ""}})
+            check("... ningun frenado temprano llego a orbitar ni a los gates",
+                  spies == [])
+
+            ctx = go(ok_gen, "gato gris", "--motor-technique", "x", sidecar=exempt)
+            check("STEPS reales: los 6 pasos corrieron y se registraron",
+                  ctx["completed"] == ORDER, str(ctx["completed"]))
+            gates = [s[0] for s in spies]
+            check("cada gate fue ALCANZADO (orbit, scale, use_size)",
+                  all(g in gates for g in ("orbit", "scale", "use_size")),
+                  str(gates))
+            check("el use_size gate recibio los tamanos de la familia",
+                  ("use_size", (512, 256, 128)) in spies)
+            rows = {r["prop"]: r["state"] for r in ctx["report"].rows}
+            check("el veredicto tiene una fila por paso",
+                  all(rows.get(ROW) for ROW in ("technique", "structure",
+                                               "generator", "views", "scale",
+                                               "use_size")), str(rows))
+            check("la exencion queda NOT_APPLICABLE", rows["structure"] == NOT_APPLICABLE)
+            check("el veredicto se escribio a disco",
+                  os.path.isfile(os.path.join(out, "motor_verdict.json")))
+
+            # HIGH #1: a generator that exits by itself must FAIL the run.
+            for label, g in (("sys.exit(0)", exit0_gen),
+                             ("raise SystemExit(0)", raise0_gen),
+                             ("RuntimeError", boom_gen)):
+                msg = ""
+                try:
+                    go(g, "gato gris", "--motor-technique", "x", sidecar=exempt)
+                except (SystemExit, RuntimeError) as exc:
+                    msg = str(exc)
+                check("generador con %s -> la corrida FALLA" % label, bool(msg))
+                check("... y no llego a evidencia/escala/use_size",
+                      not any(s[0] in ("orbit", "scale", "use_size")
+                              for s in spies))
+            check("el mensaje dice que el generador salio solo",
+                  "exited by itself" in msg or "boom" in msg)
+
+            # Mutations on the live STEPS must not pass.
+            lam_steps = [(n, (lambda c: None) if n == "scale" else f)
+                         for n, f in motor_run.STEPS]
+            expect_exit("mutacion: ('scale', lambda) -> la corrida falla",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar=exempt, steps=lam_steps)
+            noop_steps = [(n, (lambda c: None) if n == "use_size" else f)
+                          for n, f in motor_run.STEPS]
+            expect_exit("mutacion: ('use_size', lambda) -> la corrida falla",
+                        go, ok_gen, "gato gris", "--motor-technique", "x",
+                        sidecar=exempt, steps=noop_steps)
+        finally:
+            restore()
 
     # The first real client's sidecar must be valid against the live router.
     with open(os.path.join(ROOT, "recetas", "gato", "build_gato.motor.json"),
@@ -635,8 +763,6 @@ def test_motor_run():
     expect_no_exit("build_gato.motor.json: tecnica aceptada por el router",
                    preflight_router.require_technique, "gato gris",
                    side["technique"], verbose=False)
-    check("build_gato.motor.json: la exencion de estructura trae razon",
-          len(side["structure"]["exempt"]) > 20)
     with open(os.path.join(ROOT, "recetas", "gato", "build_gato.py"),
               encoding="utf-8") as fh:
         gsrc = fh.read()
