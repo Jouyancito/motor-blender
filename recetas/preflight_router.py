@@ -111,6 +111,18 @@ class Rules:
 
 _FOLD = str.maketrans("áéíóúÁÉÍÓÚñÑ", "aeiouAEIOUnN")
 
+# Irregular plurals the s/es tolerance in _alias_pattern cannot see. Anything
+# else irregular is simply UNKNOWN (fail closed), which is the safe direction.
+_IRREGULAR = {"wolves": "wolf", "leaves": "leaf", "thieves": "thief"}
+
+# Words that START a modifier phrase: everything after the first one describes
+# the head noun ("golem DE piedra", "astrolabio CON cat") and must not assign a
+# family. Spanish and English.
+_CONNECTORS = ("de", "del", "con", "para", "sin", "en", "y", "e", "o", "por",
+               "of", "with", "for", "from", "in", "on", "and", "without")
+_ARTICLES = ("el", "la", "los", "las", "un", "una", "unos", "unas",
+             "the", "a", "an")
+
 
 def _norm(text):
     return (text or "").translate(_FOLD).lower()
@@ -119,27 +131,58 @@ def _norm(text):
 def _alias_pattern(alias):
     """Whole-word match, plural-tolerant. A bare substring test made
     'woodpecker' resolve to 'wood' (material_procedural) and 'furniture' to
-    'fur' (pelo): wrong rules applied silently are worse than none. Underscore
-    counts as a separator so slugs like 'wood_door' still match."""
-    return re.compile(r"(?<![a-z0-9])%s(?:s|es)?(?![a-z0-9])"
+    'fur' (pelo): wrong rules applied silently are worse than none."""
+    return re.compile(r"(?<![a-z0-9-])%s(?:s|es)?(?![a-z0-9-])"
                       % re.escape(_norm(alias)))
 
 
-def route_all(text):
-    """Every category whose alias appears in `text` as a whole word, in order
-    of first appearance. [] when nothing matches."""
+def head_phrase(text):
+    """
+    The part of `text` that names WHAT is being built: the words before the
+    first connector ("golem de piedra" -> "golem", "astrolabio con cat" ->
+    "astrolabio"), leading articles dropped, separators and irregular plurals
+    normalised. A modifier never assigns a family: "golem de piedra" is a golem,
+    not a stone/biome.
+    """
     low = _norm(text)
-    hits = []
+    low = re.sub(r"[_,;:/()]+", " ", low)  # hyphen stays: "wall-e" is ONE word
+    words = [_IRREGULAR.get(w, w) for w in low.split()]
+    while words and words[0] in _ARTICLES:
+        words.pop(0)
+    head = []
+    for w in words:
+        if w in _CONNECTORS and head:
+            break
+        head.append(w)
+    return " ".join(head)
+
+
+def route_all(text):
+    """
+    Families of the subject's HEAD noun. An alias counts only if it is the last
+    word(s) of the head phrase (English "wood door", "hanging line") or, when
+    nothing matches there, the first (Spanish "gato gris", "pelo largo"). So
+    "robot WALL-E", "golem de piedra" and "astrolabio con cat" resolve to
+    nothing -- and nothing means UNKNOWN, which require_technique refuses.
+    """
+    phrase = head_phrase(text)
+    if not phrase:
+        return []
+    suffix, prefix = [], []
     for category, data in CATEGORIES.items():
-        first = None
         for alias in data["aliases"]:
-            m = _alias_pattern(alias).search(low)
-            if m and (first is None or m.start() < first):
-                first = m.start()
-        if first is not None:
-            hits.append((first, category))
-    hits.sort()
-    return [Rules(text, c, CATEGORIES[c]) for _pos, c in hits]
+            for m in _alias_pattern(alias).finditer(phrase):
+                if m.end() == len(phrase):
+                    suffix.append((m.start(), category))
+                if m.start() == 0:
+                    prefix.append((m.start(), category))
+    chosen = suffix or prefix
+    seen, out = set(), []
+    for _pos, category in sorted(chosen):
+        if category not in seen:
+            seen.add(category)
+            out.append(Rules(text, category, CATEGORIES[category]))
+    return out
 
 
 def route(text):
@@ -218,7 +261,7 @@ def requirements(subject, rules=None):
         lessons            lesson pointers of every matched family
     """
     rules = rules if rules is not None else route_all(subject)
-    low = _norm(subject)
+    low = head_phrase(subject)
     req = {"categories": [r.category for r in rules], "mannequin": False,
            "mannequin_exempt": [], "views": [], "use_size": None,
            "use_size_exempt": [], "structure": [], "declared_parts": [],

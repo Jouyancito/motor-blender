@@ -807,7 +807,7 @@ def test_router():
 
     expect_no_exit("alias en ingles resuelve igual",
                    preflight_router.require_technique,
-                   "warrior hair pass", "cards_alpha", verbose=False)
+                   "warrior hair", "cards_alpha", verbose=False)
 
     check("resuelve tortuga", preflight_router.route("build turtle").category
           == "quelonio")
@@ -842,12 +842,17 @@ def test_router():
 
     # Step 2: aliases are whole words. Positive controls first, so the
     # negatives below cannot be a blind regex.
-    check("control: 'wood door' resuelve material_procedural",
-          preflight_router.route("wood door").category == "material_procedural")
+    check("control: 'wood' (cabeza) resuelve material_procedural",
+          preflight_router.route("wood").category == "material_procedural")
+    check("'wood door': la cabeza es 'door' -> arquitectura, wood es modificador",
+          [r.category for r in preflight_router.route_all("wood door")]
+          == ["arquitectura"])
     check("control: plural 'tortugas' resuelve",
           preflight_router.route("dos tortugas").category == "quelonio")
-    check("control: slug 'wood_door' resuelve",
-          preflight_router.route("wood_door").category == "material_procedural")
+    check("control: slug 'wood_texture' -> material (sin sufijo, cabeza al inicio)",
+          preflight_router.route("wood_texture").category == "material_procedural")
+    check("control: slug 'madera_oscura' resuelve por la cabeza al inicio",
+          preflight_router.route("madera_oscura").category == "material_procedural")
     check("control: acento 'caparazón' resuelve",
           preflight_router.route("caparazón").category == "quelonio")
     check("'woodpecker' NO resuelve a wood",
@@ -860,22 +865,42 @@ def test_router():
                 preflight_router.require_technique, "woodpecker", "x",
                 verbose=False)
 
-    # Several families in one subject: the discarded set is the UNION.
-    both = preflight_router.route_all("pelo de la tortuga")
-    check("un sujeto con dos familias resuelve las dos",
-          {r.category for r in both} == {"pelo", "quelonio"})
-    expect_exit("tecnica descartada de la SEGUNDA familia tambien frena",
-                preflight_router.require_technique, "pelo de la tortuga",
-                "uv_sphere_painted", verbose=False)
+    # Head-noun routing (review #5): a modifier never assigns a family.
+    check("'pelo de la tortuga': la cabeza es pelo, tortuga es modificador",
+          [r.category for r in preflight_router.route_all("pelo de la tortuga")]
+          == ["pelo"])
+    expect_no_exit("... asi que una tecnica de tortuga no frena un sujeto pelo",
+                   preflight_router.require_technique, "pelo de la tortuga",
+                   "uv_sphere_painted", verbose=False)
+    for subj in ("golem de piedra", "robot WALL-E", "astrolabio con cat",
+                 "astrolabio de piedra", "golem with a rock", "mice"):
+        check("modificador NO asigna familia: %r queda desconocido" % subj,
+              not preflight_router.route(subj).matched)
+        expect_exit("... y require_technique frena (%r)" % subj,
+                    preflight_router.require_technique, subj, "x",
+                    verbose=False)
+    check("irregular 'wolves' -> mamifero",
+          preflight_router.route("wolves").category == "mamifero")
+    check("irregular 'mice' es desconocido A PROPOSITO (no hay alias raton)",
+          not preflight_router.route("mice").matched)
+    check("control: 'roca del bosque' -> bioma por la cabeza roca",
+          preflight_router.route("roca del bosque").category == "bioma")
+    check("control: 'the grey cat' -> mamifero (cabeza al final, ingles)",
+          preflight_router.route("the grey cat").category == "mamifero")
+    check("control: 'gato gris' -> mamifero (cabeza al inicio, espanol)",
+          preflight_router.route("gato gris").category == "mamifero")
+    check("control: alias de dos palabras 'hanging line' -> prop",
+          preflight_router.route("old hanging line").category == "prop")
+
 
 
 def test_router_requirements():
     print("\npreflight_router.requirements()")
     check("gato -> mamifero", preflight_router.route("gato gris").category
           == "mamifero")
-    check("carro de la aldea -> prop y arquitectura",
-          {r.category for r in preflight_router.route_all("carro de la aldea")}
-          == {"prop", "arquitectura"})
+    check("carro de la aldea -> solo prop (aldea es modificador)",
+          [r.category for r in preflight_router.route_all("carro de la aldea")]
+          == ["prop"])
     check("pradera -> bioma", preflight_router.route("pradera").category
           == "bioma")
     check("gatito/'catapult' no son gato",
