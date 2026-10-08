@@ -755,6 +755,14 @@ def test_motor_run():
                                                "generator", "views", "scale",
                                                "use_size")), str(rows))
             check("la exencion queda NOT_APPLICABLE", rows["structure"] == NOT_APPLICABLE)
+            with open(os.path.join(out, "motor_verdict.json"), encoding="utf-8") as fh:
+                vj = json.load(fh)
+            check("con huecos abiertos el veredicto es PASS_WITH_GAPS, no PASS",
+                  vj["verdict"] == "PASS_WITH_GAPS" and len(vj["gaps"]) >= 3,
+                  str(vj["verdict"]))
+            check("... y los huecos nombran la exencion y la altura sin fuente",
+                  any("structure exempt" in g for g in vj["gaps"])
+                  and any("size range" in g for g in vj["gaps"]))
             check("el veredicto se escribio a disco",
                   os.path.isfile(os.path.join(out, "motor_verdict.json")))
 

@@ -162,7 +162,7 @@ def make_ctx(argv):
         "allow_unknown": unknown_entry["reason"] if unknown_entry else "",
         "structure_exempt": struct_entry["reason"] if struct_entry else "",
         "report": Report("MOTOR_RUN %s :: %s" % (stem, subject)),
-        "rules": None, "req": None, "evidence": [], "asset_objects": [],
+        "rules": None, "req": None, "gaps": [], "evidence": [], "asset_objects": [],
     }
 
 
@@ -184,6 +184,7 @@ def step_technique(ctx):
     ctx["report"].add("technique", PASS, "%r ok for %s"
                       % (ctx["technique"], ", ".join(cats)))
     for gap in ctx["req"]["gaps"]:
+        ctx["gaps"].append(gap)
         print("  [motor_run] OPEN GAP  %s" % gap)
 
 
@@ -223,6 +224,7 @@ def step_structure(ctx):
     if not sub.is_complete():
         raise SystemExit(sub.render() + "\nPREFLIGHT 4d SIN CUMPLIR (motor_run).\n")
     if exempt and not checked:
+        ctx["gaps"].append("structure exempt (approved): %s" % exempt)
         ctx["report"].add("structure", NOT_APPLICABLE, reason=exempt)
     else:
         ctx["report"].add("structure", PASS, "%d part rows researched" % checked)
@@ -305,10 +307,12 @@ def step_scale(ctx):
     rep = scale_ref.require_scale_evidence(
         ctx["evidence"], asset_objects=ctx["asset_objects"],
         expected_height_m=req["height_range"])
-    if any(r["prop"] == "asset_height_vs_source" and r["state"] != PASS
-           for r in rep.rows):
-        print("  [motor_run] OPEN GAP  asset height was NOT checked against a "
-              "sourced size range (none for this family)")
+    if not any(r["prop"] == "asset_height_vs_source" and r["state"] == PASS
+               for r in rep.rows):
+        gap = ("asset height was NOT checked against a sourced size range "
+               "(none for this family)")
+        ctx["gaps"].append(gap)
+        print("  [motor_run] OPEN GAP  %s" % gap)
     ctx["report"].add("scale", PASS, "mannequin 1.80 m + %d renders"
                       % len(ctx["evidence"]))
 
@@ -361,15 +365,20 @@ def run(argv, steps=None):
         ctx["completed"].append(name)
     report = ctx["report"]
     print(report.render())
+    # A plain PASS means nothing was left open. Declared gaps (exemptions, no
+    # sourced size range, research holes) make it visibly PASS_WITH_GAPS.
+    label = "PASS_WITH_GAPS" if report.verdict() == PASS and ctx["gaps"] \
+        else report.verdict()
+    ctx["verdict_label"] = label
     os.makedirs(ctx["out"], exist_ok=True)
     with open(os.path.join(ctx["out"], "motor_verdict.json"), "w",
               encoding="utf-8") as fh:
         json.dump({"subject": ctx["subject"], "generator": ctx["generator"],
-                   "verdict": report.verdict(), "rows": report.rows,
+                   "verdict": label, "gaps": ctx["gaps"], "rows": report.rows,
                    "evidence": ctx["evidence"]}, fh, indent=2)
     report.require_complete()
-    print("[motor_run] gates %s. This is NOT a visual verdict -- open:" %
-          report.verdict())
+    print("[motor_run] gates %s (%d open gaps). This is NOT a visual verdict "
+          "-- open:" % (label, len(ctx["gaps"])))
     for p in ctx["evidence"]:
         print("    %s" % p)
     return ctx
