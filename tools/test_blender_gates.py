@@ -579,6 +579,127 @@ def main():
     check("bake_shading_check control: a flat plane has no occlusion to correlate with -> NOT_TESTED",
           rep.verdict() == "NOT_TESTED", rep.rows)
 
+    # ------------------------------------------------------------- cosecha-1: human recipes
+    from mathutils import Vector
+    from recetas import mpfb_human as MH, reproportion_humanoid as RH, pose_solver as PS
+
+    # factory objects: removed; anything else is left alone
+    fresh()
+    bpy.ops.mesh.primitive_cube_add(size=2.0)
+    bpy.context.active_object.name = "Cube"
+    bpy.ops.mesh.primitive_cube_add(size=0.5)
+    bpy.context.active_object.name = "keepme"
+    gone = MH.clean_factory_scene()
+    check("clean_factory_scene: removes the 2 m factory Cube and ONLY it",
+          gone == ["Cube"] and "keepme" in bpy.data.objects and "Cube" not in bpy.data.objects, gone)
+    fresh()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    bpy.context.active_object.name = "Cube"
+    check("clean_factory_scene control: a user object that is merely NAMED Cube (1 m) is kept",
+          MH.clean_factory_scene() == [] and "Cube" in bpy.data.objects)
+
+    real_mod = MH.MPFB_MODULE
+    MH.MPFB_MODULE = "bl_ext.user_default.no_such_addon"
+    try:
+        MH.ensure_mpfb()
+        failed_loud = False
+    except SystemExit as e:
+        failed_loud = "install-file" in str(e)
+    MH.MPFB_MODULE = real_mod
+    check("ensure_mpfb control: a missing addon exits LOUDLY with the install-file command", failed_loud)
+
+    fresh()
+    body = MH.mpfb_human_base(dict(gender=0.0, age=0.33, muscle=0.15, weight=0.12, proportions=0.55,
+                                   height=0.5, cupsize=0.38, firmness=0.5),
+                              dict(asian=0.7, caucasian=0.3, african=0.0), name="hb", part="body")
+    jg = [g.name for g in body.vertex_groups if g.name.startswith("joint-")]
+    check("mpfb_human_base: 19158-vertex basemesh WITH the joint-* helper cubes (detailed_helpers on), no shape keys, stamped",
+          len(body.data.vertices) == 19158 and len(jg) > 20 and not body.data.shape_keys
+          and body.get("motor_part") == "body" and "mpfb_human_base" in body.get("motor_technique", ""),
+          (len(body.data.vertices), len(jg)))
+    J0 = RH.joint_centroids(body)
+    rig = MH.add_human_rig(body, "hr", part="body")
+    uh = np.array(rig.data.bones["upperleg01.L"].head_local)
+    near, far = np.linalg.norm(uh - J0["joint-l-upper-leg"]), np.linalg.norm(uh - J0["joint-l-hand"])
+    check("add_human_rig: the rig is FITTED to the joint cubes (upper leg within 3 cm of its cube; control: 25+ cm from the hand cube)",
+          near < 0.03 and far > 0.25 and rig.get("motor_part") == "body", (near, far))
+    check("region_ids: bone-prefix whitelist labels thighs and head (not 'skin' for everything)",
+          set(np.unique(MH.region_ids(body))) >= {MH.REG["thigh"], MH.REG["head"], MH.REG["torso"]})
+
+    # reproportion: neutral = identity; k_leg stretches the legs; bobblehead guard
+    def zspan(b):
+        a = np.empty(len(b.data.vertices) * 3)
+        b.data.vertices.foreach_get("co", a)
+        return a.reshape(-1, 3)[:, 2].max() - a.reshape(-1, 3)[:, 2].min(), a.copy()
+    fresh()
+    b1 = MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="b1")
+    h0, c0 = zspan(b1)
+    Jb = RH.joint_centroids(b1)
+    RH.reproportion_humanoid(b1)
+    h1, c1 = zspan(b1)
+    check("reproportion_humanoid control: all-neutral parameters leave the mesh unchanged (max dev < 1e-9)",
+          np.abs(c0 - c1).max() < 1e-9, np.abs(c0 - c1).max())
+    RH.reproportion_humanoid(b1, k_leg=1.26, ear_scale=0.6, ks_hand=0.85, ks_foot=0.9, part="body")
+    J1 = RH.joint_centroids(b1)
+    h2, c2 = zspan(b1)
+    leg0 = Jb["joint-l-upper-leg"][2] - Jb["joint-l-ankle"][2]
+    leg1 = J1["joint-l-upper-leg"][2] - J1["joint-l-ankle"][2]
+    check("reproportion_humanoid: k_leg=1.26 stretches the hip-ankle span by ~26%% (ratio %.3f) and the figure grows" % (leg1 / leg0),
+          1.15 < leg1 / leg0 < 1.35 and h2 > h1 + 0.1 and "reproportion_humanoid" in b1.get("motor_technique", ""),
+          (leg1 / leg0, h1, h2))
+    try:
+        RH.reproportion_humanoid(MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="b2"), k_head=1.4)
+        refused = False
+    except SystemExit as e:
+        refused = "bobblehead" in str(e)
+    check("reproportion_humanoid control: k_head=1.4 on the realistic head REFUSES (bobblehead) unless head_replaceable=True", refused)
+    b3 = MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="b3")
+    RH.reproportion_humanoid(b3, k_head=1.4, head_replaceable=True)
+    check("reproportion_humanoid: head_replaceable=True allows the dilation", True)
+
+    # slim_limbs_radial
+    fresh()
+    sb = MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="sb")
+    srig = MH.add_human_rig(sb, "sr")
+    _, s0 = zspan(sb)
+    RH.slim_limbs_radial(sb, srig)           # all 1.0
+    _, s1 = zspan(sb)
+    check("slim_limbs_radial control: factors of 1.0 move nothing (max dev < 1e-6)", np.abs(s0 - s1).max() < 1e-6, np.abs(s0 - s1).max())
+    moved = RH.slim_limbs_radial(sb, srig, leg_low=0.5)
+    _, s2 = zspan(sb)
+    d = np.abs(s2 - s1).reshape(-1, 3).max(axis=1)
+    check("slim_limbs_radial: leg_low=0.5 moves shin vertices (>0.5 cm) and leaves the head alone",
+          moved > 500 and d.max() > 0.005 and (d > 1e-9).mean() < 0.3, (moved, d.max(), (d > 1e-9).mean()))
+
+    # pose solver
+    fresh()
+    pb_ = MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="pb")
+    prig = MH.add_human_rig(pb_, "pr")
+    PS.reset_pose(prig)
+    want = Vector((0.2, -0.5, -0.84)).normalized()
+    pbn = prig.pose.bones
+    d_before = (pbn["lowerleg01.L"].head - pbn["upperleg01.L"].head).normalized()
+    PS.aim(prig, "upperleg01.L", ("head", "lowerleg01.L"), want, part="body")
+    d_after = (pbn["lowerleg01.L"].head - pbn["upperleg01.L"].head).normalized()
+    check("pose_solver.aim: the thigh now points along the requested direction (<0.5 deg); control: it did not before (>5 deg)",
+          math.degrees(d_after.angle(want)) < 0.5 and math.degrees(d_before.angle(want)) > 5.0,
+          (math.degrees(d_after.angle(want)), math.degrees(d_before.angle(want))))
+    check("pose_solver.aim: stamps the rig with the technique", "pose_solver" in prig.get("motor_technique", "") and prig.get("motor_part") == "body")
+    S_, W_ = Vector((0, 0, 0)), Vector((0.3, 0.1, -0.2))
+    M_ = PS.two_bone_ik(S_, 0.3, 0.3, W_, Vector((0, -1, 0)))
+    check("pose_solver.two_bone_ik: mid joint is exactly a from S and b from W; bends toward the pole",
+          abs((M_ - S_).length - 0.3) < 1e-6 and abs((W_ - M_).length - 0.3) < 1e-6 and M_.y < 0, (M_,))
+    far_ = PS.two_bone_ik(S_, 0.3, 0.3, Vector((5, 0, 0)), Vector((0, -1, 0)))
+    check("pose_solver.two_bone_ik control: an unreachable target clamps (arm fully extended, no NaN)",
+          abs((far_ - S_).length - 0.3) < 1e-3 and not any(math.isnan(c) for c in far_))
+    u_, n_ = PS.palm_normal(prig, "L")
+    tgt = Vector((0.0, 1.0, 0.15)).normalized()
+    PS.orient_palm(prig, "L", 1.0, tgt)
+    u2, n2 = PS.palm_normal(prig, "L")
+    a_, b_ = n2 - u2 * n2.dot(u2), tgt - u2 * tgt.dot(u2)
+    check("pose_solver.orient_palm: the palm normal ends up facing the target (in-plane angle < 1 deg)",
+          math.degrees(a_.angle(b_)) < 1.0 and u2.length > 0.99, math.degrees(a_.angle(b_)))
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):

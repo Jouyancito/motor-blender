@@ -37,6 +37,15 @@ REGISTRY = {
     "surface_decal": {
         "module": "surface_decal", "calls": ("surface_decal",),
         "note": "painted graphic projected onto the final surface with the target's smooth normals (surface_decal.py)"},
+    "mpfb_human_base": {
+        "module": "mpfb_human", "calls": ("mpfb_human_base", "add_human_rig"),
+        "note": "MPFB human + rig, headless, detailed_helpers always on (mpfb_human.py)"},
+    "reproportion_humanoid": {
+        "module": "reproportion_humanoid", "calls": ("reproportion_humanoid",),
+        "note": "position-map re-proportion of an MPFB human before the rig is fitted (reproportion_humanoid.py)"},
+    "pose_solver": {
+        "module": "pose_solver", "calls": ("aim",),
+        "note": "pose a rigged humanoid by aiming bones, 2-bone IK, palm roll (pose_solver.py)"},
 }
 
 # Recipes that exist in recetas/ but are NOT registered, with the reason.

@@ -764,4 +764,64 @@ CATEGORIES = {
             "gametools:bird_prey/build_bird.py:1-3|bird of prey",
         ],
     },
+    # ---------------------------------------------------------------- humano
+    "humano": {
+        "creature": True,
+        "aliases": ["humano", "human", "humanoide", "humanoid", "persona",
+                    "person"],
+        "established": ("base MPFB con helpers (recetas/mpfb_human.py), "
+                        "reproporcion por posicion sobre TODOS los vertices "
+                        "ANTES de ajustar el rig (recetas/reproportion_humanoid.py), "
+                        "pose apuntando huesos (recetas/pose_solver.py); si las "
+                        "proporciones no son realistas, la cabeza es "
+                        "REEMPLAZABLE"),
+        "discarded": {
+            "skin_modifier_skeleton": (
+                "esqueleto con modificador Skin: da solo tubos ('tubos, muneca "
+                "poligonal', Joan sobre rem v7); la anatomia MPFB si fue aceptada"),
+            "realistic_head_dilated": (
+                "cabeza MPFB realista dilatada a proporciones anime: cabezon "
+                "sobre un cuello de serie; se corta a medio cuello y se cambia "
+                "por una cabeza construida"),
+            "voxel_remesh_open_base": (
+                "voxel remesh de una base NO estanca: encaje; solo se "
+                "remallan solidos cerrados (cabeza+cuello)"),
+        },
+        "discarded_sources": {
+            "skin_modifier_skeleton": "recetas/mpfb_human.py:6-10|Skin-modifier",
+            "realistic_head_dilated": "recetas/reproportion_humanoid.py:10-16|bobblehead",
+            "voxel_remesh_open_base": "recetas/mpfb_human.py:26-31|non-watertight",
+        },
+        "must_read": [
+            "recetas/mpfb_human.py (gotchas 1-6: install-file, detailed_helpers, cubo de fabrica)",
+            "CREATION_PROTOCOL.md §3 (contra 1.80 m)",
+        ],
+        "structural_note": (
+            "juzgar RELACIONES antes que partes (manga sobre brazo, mano desde "
+            "el puno): la pose se escribe como numeros ('muslo 14 grados al "
+            "frente, tibia yaw 12 grados'); el paladar de la mano se mide en "
+            "reposo (signo por mirada, no por algebra); la cabeza se mide "
+            "contra el cuerpo (rem: 4.0 cm de cabeza sobre 17 cm = 0.267)"),
+        "moving_parts": [],
+        "structure_spec": None,
+        "gaps": [
+            "no per-part STRUCTURE table for a human (LECCIONES 5, 11); rem v8 "
+            "has none approved: Joan accepted the anatomy but legs vs photos "
+            "and the face are still off",
+            "scale_ref has no ref_height parameter: a miniature figure (rem, "
+            "17 cm) cannot satisfy the 1.80 m mannequin requirement",
+        ],
+        "mannequin_m": 1.80,
+        "required_views": list(_ALL_VIEWS),
+        "use_size": _MOB_SIZES,
+        "physics": {"stands": False, "drop_test": False, "islands": "fail", "interpenetration": "report",
+                    "basis": "initial, uncalibrated: a posed figure (kneeling, seated) need not stand free; "
+                             "floating cloth/hair islands still fail"},
+        "lessons": ["LECCIONES.md#5", "LECCIONES.md#11"],
+        "sources": [
+            "recetas/mpfb_human.py:1-12|MPFB 2.0.18",
+            "CREATION_PROTOCOL.md:151-172|1.80 m mannequin",
+            "memory:feedback_modelar_siempre_con_motor.md:11-13|Rem v1",
+        ],
+    },
 }

@@ -494,7 +494,7 @@ def test_router_knowledge():
     cats = router_knowledge.CATEGORIES
     for needed in ("pelo", "quelonio", "material_procedural", "export_godot",
                    "mamifero", "prop", "arquitectura", "bioma", "construct",
-                   "blob", "artropodo", "serpiente", "ave"):
+                   "blob", "artropodo", "serpiente", "ave", "humano"):
         check("existe la categoria %s" % needed, needed in cats)
 
     n_ok = n_unchecked = 0
@@ -1830,6 +1830,18 @@ def test_registry_integrity():
               ok and all(c in defs for c in spec["calls"]), sorted(defs)[:8])
         check("registry %s: the recipe stamps its output (motor_stamp)" % tid,
               "_motor_stamp(" in src or "stamp_object(" in src)
+    tmp = tempfile.mkdtemp()
+    try:
+        for tid, spec in sorted(TR.REGISTRY.items()):
+            call = spec["calls"][0]
+            good = os.path.join(tmp, "g_%s.py" % tid)
+            bad = os.path.join(tmp, "b_%s.py" % tid)
+            open(good, "w").write("from recetas.%s import %s\n%s(obj, part='p')\n" % (spec["module"], call, call))
+            open(bad, "w").write("from recetas.%s import %s\n%s(obj)\n" % (spec["module"], call, call))
+            check("registry %s: the AST gate accepts import+call with part=, rejects it without" % tid,
+                  TR.evidence(good, tid)[0] and not TR.evidence(bad, tid)[0], TR.evidence(good, tid))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     check("control: an unknown technique is not registered", not TR.is_registered("no_such_technique_xyz"))
     check("material_procedural gap closed: no longer listed as missing",
           "material_procedural" not in TR.ROUTER_TECHNIQUES_WITHOUT_IMPLEMENTATION
