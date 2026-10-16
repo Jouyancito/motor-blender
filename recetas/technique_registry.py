@@ -34,6 +34,9 @@ REGISTRY = {
     "bake_procedural_to_float_color": {
         "module": "bake_procedural", "calls": ("bake_procedural_to_float_color",),
         "note": "shader graph -> FLOAT_COLOR before glTF export (bake_procedural.py)"},
+    "surface_decal": {
+        "module": "surface_decal", "calls": ("surface_decal",),
+        "note": "painted graphic projected onto the final surface with the target's smooth normals (surface_decal.py)"},
 }
 
 # Recipes that exist in recetas/ but are NOT registered, with the reason.

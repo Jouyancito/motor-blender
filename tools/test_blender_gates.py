@@ -480,6 +480,60 @@ def main():
     em.masks_muted = real
     check("morphed_coords control: with the mask NOT muted it REFUSES instead of returning shifted indices", refused)
 
+    from recetas import surface_decal as sd
+
+    def decal_target():
+        fresh()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=40, radius=1.0)
+        t = bpy.context.active_object
+        bpy.ops.object.shade_smooth()
+        m = bpy.data.materials.new("black")
+        return t, m
+
+    def vcoords(ob):
+        a = np.empty(len(ob.data.vertices) * 3, np.float32)
+        ob.data.vertices.foreach_get("co", a)
+        return a.reshape(-1, 3)
+
+    t, m = decal_target()
+    hit, n = sd.surface_decal("d0", t, (0.1, -5, 0.2), (0, 1, 0), 0.2, 0.15, m, wobble=0.1, part="decals")
+    d = bpy.data.objects["d0"]
+    r = np.linalg.norm(vcoords(d), axis=1)
+    cn = np.array([tuple(c.vector) for c in d.data.corner_normals])
+    rad = vcoords(d)[[l.vertex_index for l in d.data.loops]]
+    rad = rad / np.linalg.norm(rad, axis=1, keepdims=True)
+    check("surface_decal: every decal vertex sits ON the sphere (|r-1| < 0.01), 1+14*48 verts",
+          len(d.data.vertices) == 1 + 14 * 48 and np.abs(r - 1).max() < 0.01, (r.min(), r.max()))
+    check("surface_decal: custom split normals follow the target's smooth normals (radial dot > 0.99)",
+          float((cn * rad).sum(axis=1).min()) > 0.99)
+    check("surface_decal: stamped with part + technique",
+          d.get("motor_part") == "decals" and "surface_decal" in d.get("motor_technique", ""))
+    sd.surface_decal("same", t, (0.1, -5, 0.2), (0, 1, 0), 0.2, 0.15, m, wobble=0.1)
+    a = vcoords(bpy.data.objects["same"]).copy()
+    bpy.data.objects.remove(bpy.data.objects["same"])
+    sd.surface_decal("same", t, (0.1, -5, 0.2), (0, 1, 0), 0.2, 0.15, m, wobble=0.1)
+    check("surface_decal: wobble seed is stable across calls (crc32, not hash(str))",
+          np.abs(a - vcoords(bpy.data.objects["same"])).max() == 0.0)
+    sd.surface_decal("d2", t, (0.1, -5, 0.2), (0, 1, 0), 0.2, 0.15, m, wobble=0.1, seed=7)
+    check("surface_decal control: another seed changes the outline; a shifted origin moves the decal",
+          np.abs(a - vcoords(bpy.data.objects["d2"])).max() > 1e-4
+          and (sd.surface_decal("d3", t, (0.5, -5, 0.2), (0, 1, 0), 0.2, 0.15, m) or True)
+          and np.abs(vcoords(bpy.data.objects["d3"]).mean(axis=0) - a.mean(axis=0)).max() > 0.1)
+    try:
+        sd.surface_decal("d4", t, (3.0, -5, 0.0), (0, 1, 0), 0.2, 0.15, m)
+        missed = False
+    except SystemExit as e:
+        missed = "missed" in str(e)
+    check("surface_decal control: a ray that misses the target RAISES instead of dropping the decal", missed)
+    t.location = (0.5, 0, 0)
+    t.rotation_euler = (0, 0, 0.5)
+    bpy.context.view_layer.update()
+    sd.surface_decal("d5", t, (0.5, -5, 0.0), (0, 1, 0), 0.1, 0.1, m)
+    d5 = bpy.data.objects["d5"]
+    wp = np.array([tuple(d5.matrix_world @ v.co) for v in d5.data.vertices]) - np.array([0.5, 0, 0])
+    check("surface_decal: honours the target's matrix_world (decal rides a moved/rotated target)",
+          abs(np.linalg.norm(wp, axis=1).mean() - 1.0) < 0.01)
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):
