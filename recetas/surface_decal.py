@@ -12,8 +12,10 @@
 #      randomised per process, so the same decal came out different every run. Here the
 #      seed is crc32(name) (stable) unless you pass seed=. (4) the ray is parameterised
 #      (origin + direction, world space) instead of the original's hard-coded
-#      y=-0.05 / +Y front view. (5) probe distances scale with the target bbox diagonal (rana ratios by default). (6) the BVH is built from the target's mesh DATA (final
-#      sculpted mesh, no modifiers); pass tree= to reuse one across many decals.
+#      y=-0.05 / +Y front view. (5) probe distances and the lift scale with the target's mesh-data bbox
+#      diagonal (rana ratios by default; lift_ratio=, not an absolute `lift`). (6) the BVH
+#      and that diagonal come from the same mesh DATA (final sculpted mesh, no modifiers);
+#      pass tree= to reuse one across many decals.
 # FUENTE: rana/rana_gen.py:392-442 (smooth_normal, decal), approved by Joan at v10
 #      ("Esta si que si, ya si es muy similar", engram #2950). Replaces paint_por_geometria
 #      where the graphic needs real geometry of its own (per-vertex paint cannot draw an
@@ -25,6 +27,8 @@
 import math
 import random
 import zlib
+
+import numpy as np
 
 import bmesh
 import bpy
@@ -38,11 +42,20 @@ except ImportError:  # recipes are also used with recetas/ itself on sys.path
     from motor_stamp import stamp_object as _motor_stamp
 
 TECHNIQUE = "surface_decal"
-# Probe geometry is relative to the target's bbox diagonal. The defaults ARE the rana v10
+# Probe geometry AND lift are relative to the target's mesh-data bbox diagonal. The defaults ARE the rana v10
 # values (0.004 m start offset, 0.008 m ray length, 0.0012 m hit tolerance) on its
-# 0.0436094 m body diagonal, so rana reproduces exactly while a 2 m prop gets 2 m-scale probes.
-RANA_DIAG = 0.0436094075832481
+# 0.0436094 m body mesh-data diagonal, so rana reproduces exactly while a 2 m prop gets 2 m-scale probes.
+RANA_DIAG = 0.04360940955205595
 OFFSET_RATIO, REACH_RATIO, TOL_RATIO = 0.004 / RANA_DIAG, 0.008 / RANA_DIAG, 0.0012 / RANA_DIAG
+LIFT_RATIO = 0.00006 / RANA_DIAG      # rana: the decal floats 0.06 mm above the wood
+
+
+def mesh_diagonal(obj):
+    """Bounding-box diagonal of obj's mesh DATA in object space (what build_tree sees)."""
+    co = np.empty(len(obj.data.vertices) * 3, dtype=np.float32)
+    obj.data.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    return float(np.linalg.norm(co.max(axis=0) - co.min(axis=0)))
 
 
 def build_tree(obj):
@@ -67,7 +80,7 @@ def smooth_normal(obj, idx, co):
     return n.normalized()
 
 
-def surface_decal(name, target, origin, direction, rx, rz, material, lift=0.00006,
+def surface_decal(name, target, origin, direction, rx, rz, material, lift_ratio=LIFT_RATIO,
                   wobble=0.0, seed=None, tree=None, collection=None, rings=14, segs=48,
                   part=None, offset_ratio=OFFSET_RATIO, reach_ratio=REACH_RATIO, tol_ratio=TOL_RATIO):
     """Project an elliptical (rx, rz) decal onto `target` along `direction` from `origin`
@@ -82,8 +95,9 @@ def surface_decal(name, target, origin, direction, rx, rz, material, lift=0.0000
         raise SystemExit("surface_decal %s missed the %s surface from %s along %s"
                          % (name, target.name, tuple(origin), tuple(direction)))
     rot = n.to_track_quat("Z", "Y").to_matrix()
-    diag = Vector(target.dimensions).length / max(sum(target.matrix_world.to_scale()) / 3.0, 1e-12)
-    off, reach, tol = diag * offset_ratio, diag * reach_ratio, diag * tol_ratio   # local space
+    diag = mesh_diagonal(target)                       # object space, same data the BVH reads
+    off, reach, tol = diag * offset_ratio, diag * reach_ratio, diag * tol_ratio
+    lift = diag * lift_ratio
     wr = random.Random((zlib.crc32(name.encode()) & 0xffff) if seed is None else seed)
     jit = [1 + wobble * wr.uniform(-1, 1) for _ in range(6)]
     bm = bmesh.new()

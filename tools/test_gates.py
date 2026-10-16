@@ -1882,8 +1882,21 @@ def test_probe_with_control():
     ps3.probe("right_reason", measure, lambda d: d["inside"] == 0, {"inside": 0}, {"inside": 4},
               intended=lambda d: d["inside"] > 0)
     check("control that fails for the intended reason -> PASS", st(ps3) == P)
-    ps3.probe("crash", lambda x: 1 / 0, lambda n: True, [1], [1], intended=lambda n: True)
+    ps3.probe("crash", lambda x: 1 / 0, lambda n: True, [1], [1], intended=lambda n: n > 0)
     check("a measure() that raises is NOT_TESTED, not a clean pass", st(ps3) == NT)
+    ps3.probe("crash_ok", lambda x: x, lambda n: 1 / 0, [1], [1], intended=lambda n: n > 0)
+    check("an ok() that raises (ZeroDivisionError) is NOT_TESTED with the exception text",
+          st(ps3) == NT and "ZeroDivisionError" in ps3.report.rows[-1]["detail"])
+    ps3.probe("crash_intended", lambda x: x, lambda n: n == 0, 0, 5, intended=lambda n: 1 / 0)
+    check("an intended() that raises is NOT_TESTED with the exception text",
+          st(ps3) == NT and "ZeroDivisionError" in ps3.report.rows[-1]["detail"])
+    ps3.probe("crash_control_ok", lambda x: x, lambda n: (1 / 0) if n == 5 else n == 0, 0, 5, intended=lambda n: n > 0)
+    check("ok() crashing only on the CONTROL's value is NOT_TESTED", st(ps3) == NT and "ZeroDivisionError" in ps3.report.rows[-1]["detail"])
+    ps3.probe("vacuous", measure, lambda d: d["inside"] == 0, {"inside": 0}, {"inside": 4}, intended=lambda d: True)
+    check("`intended` = lambda v: True is VACUOUS (true on the clean subject) -> NOT_TESTED, not PASS",
+          st(ps3) == NT and "vacuous" in ps3.report.rows[-1]["detail"])
+    ps3.probe("vacuous_but_defect", measure, lambda d: d["inside"] == 0, {"inside": 2}, {"inside": 4}, intended=lambda d: True)
+    check("vacuity only matters for a clean subject: a defective subject is still FAIL", st(ps3) == F)
     try:
         ps3.probe("noint", measure, lambda d: True, {}, {}, intended=None)
         raised = False
@@ -1940,41 +1953,53 @@ def test_harvest_gate():
     open(gen, "w").write(
         "from recetas.paint_por_geometria import stamp\n"       # 1
         "def build(g, m):\n"                                    # 2
-        "    n = stamp(g, m, (1, 0, 0), part='body')\n"         # 3
-        "    return n\n"                                        # 4
-        "X = 1\n")                                              # 5  (module level)
+        "    a = len(g)\n"                                      # 3
+        "    n = stamp(g, m, (1, 0, 0), part='body')\n"         # 4
+        "    return n + a\n"                                    # 5
+        "def tiny():\n"                                         # 6
+        "    return 1\n"                                        # 7
+        "def stub():\n"                                         # 8
+        "    pass\n"                                            # 9
+        "def stub2():\n"                                        # 10
+        "    \"doc\"\n"                                         # 11
+        "    ...\n"                                             # 12
+        "    return None\n"                                     # 13
+        "def other(x):\n"                                       # 14
+        "    y = x + 1\n"                                       # 15
+        "    z = y * 2\n"                                       # 16
+        "    return z\n"                                        # 17
+        "X = 1\n")                                              # 18 (module level)
     open(os.path.join(adir, "README.md"), "w").write("# readme\n")
     outside = os.path.join(tmp, "outside.py")
-    open(outside, "w").write("def f():\n    return 1\n")
+    open(outside, "w").write("def f():\n    a = 1\n    b = 2\n    return a + b\n")
     os.symlink(outside, os.path.join(adir, "link.py"))
-    good = {"source": "gen.py:2-4", "why": "paint zones stamped per part on the final mesh", "status": "proposed"}
-    OLD = "2026-01-01T00:00:00"
-    ok = lambda sec, created=OLD: H.validate(sec, adir, created, ["gen.py"])[0]
-    bake_t = H._module_first_commit("bake_procedural")
+    good = {"source": "gen.py:2-5", "why": "paint zones stamped per part on the final mesh", "status": "proposed"}
+    SNAP = ["bvh_glue", "engordar_anatomico", "paint_por_geometria", "ribbon_tinta"]   # the registry before cosecha-1
+    ok = lambda sec, snap=SNAP, gens=("gen.py",): H.validate(sec, adir, snap, list(gens))[0]
+    prom = lambda tech, **kw: {"entries": [dict(good, status="promoted", technique=tech, **kw)]}
     try:
         check("harvest: missing section -> FAIL", not ok(None))
         check("harvest: template written by start_asset -> FAIL (empty)", not ok(H.empty_section()))
         check("harvest: {} -> FAIL", not ok({}))
         check("harvest: entries [] and no none -> FAIL", not ok({"entries": []}))
         check("harvest: `none: true` -> FAIL", not ok({"none": True}))
-        # --- none: closed list
         check("harvest: none = reused_only:<registered technique the generator calls with part=> -> PASS",
               ok({"none": "reused_only:paint_por_geometria"}))
-        check("harvest: none = asset_specific:<file:line inside a def> -> PASS", ok({"none": "asset_specific:gen.py:3"}))
+        check("harvest: none = asset_specific:<file:line inside a non-trivial def> -> PASS", ok({"none": "asset_specific:gen.py:3"}))
         check("JUNK: none = 'aaaaaaaaaaaaaaaa' -> FAIL", not ok({"none": "aaaaaaaaaaaaaaaa"}))
         check("JUNK: none = free text sentence -> FAIL", not ok({"none": "built only from existing recipes; nothing new surfaced"}))
         check("JUNK: reused_only with an unregistered technique -> FAIL", not ok({"none": "reused_only:made_up_technique"}))
         check("JUNK: reused_only with a registered technique the generator NEVER calls -> FAIL",
               not ok({"none": "reused_only:bvh_glue"}))
         check("JUNK: reused_only with an empty list -> FAIL", not ok({"none": "reused_only:"}))
-        check("JUNK: asset_specific pointing at module-level code (not a def/class) -> FAIL",
-              not ok({"none": "asset_specific:gen.py:5"}))
+        check("JUNK: asset_specific pointing at module-level code -> FAIL", not ok({"none": "asset_specific:gen.py:18"}))
         check("JUNK: asset_specific:README.md:1 -> FAIL (not code)", not ok({"none": "asset_specific:README.md:1"}))
         check("JUNK: asset_specific:/etc/passwd:1 -> FAIL (outside the asset)", not ok({"none": "asset_specific:/etc/passwd:1"}))
-        # --- entries
+        check("TRIVIAL: asset_specific citing a 1-statement def -> FAIL", not ok({"none": "asset_specific:gen.py:6-7"}))
+        check("TRIVIAL: asset_specific citing a pass-only def -> FAIL", not ok({"none": "asset_specific:gen.py:8-9"}))
+        check("TRIVIAL: asset_specific citing doc + ... + return None -> FAIL", not ok({"none": "asset_specific:gen.py:10-13"}))
         check("harvest: one valid entry (proposed) -> PASS", ok({"entries": [good]}))
-        check("harvest: promoted + registered + postdates the manifest -> PASS",
-              ok({"entries": [dict(good, status="promoted", technique="surface_decal")]}))
+        check("harvest: promoted + registered + absent from the snapshot + source in the asset -> PASS", ok(prom("surface_decal")))
         check("JUNK: README.md:1 citation (inside the asset but not code) -> FAIL",
               not ok({"entries": [dict(good, source="README.md:1")]}))
         check("JUNK: the REPO's README.md:1 -> FAIL", not ok({"entries": [dict(good, source=os.path.join(REPO_ROOT, "README.md") + ":1")]}))
@@ -1982,35 +2007,52 @@ def test_harvest_gate():
         check("JUNK: ../outside.py:1 escape -> FAIL", not ok({"entries": [dict(good, source="../outside.py:2")]}))
         check("JUNK: a symlink inside the asset pointing outside is resolved and rejected -> FAIL",
               not ok({"entries": [dict(good, source="link.py:2")]}))
-        check("JUNK: module-level line (gen.py:5) is not inside a def/class -> FAIL",
-              not ok({"entries": [dict(good, source="gen.py:5")]}))
-        check("JUNK: a range that leaves the def (gen.py:2-5) -> FAIL", not ok({"entries": [dict(good, source="gen.py:2-5")]}))
-        check("JUNK: a recetas/ citation is allowed (motor code is inside the roots) -> PASS",
-              ok({"entries": [dict(good, source="recetas/bvh_glue.py:20-30")]}))
-        check("JUNK: promoted technique that ALREADY EXISTED (manifest created after bake_procedural was committed) -> FAIL",
-              not ok({"entries": [dict(good, status="promoted", technique="bake_procedural_to_float_color")]},
-                     created=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(bake_t + 1))))
-        check("control: the same entry passes when the manifest predates the recipe (created one second earlier)",
-              ok({"entries": [dict(good, status="promoted", technique="bake_procedural_to_float_color")]},
-                 created=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(bake_t - 1))))
-        check("JUNK: promoted with a manifest that has no `created` -> FAIL (cannot date it)",
-              not ok({"entries": [dict(good, status="promoted", technique="surface_decal")]}, created=None))
-        check("JUNK: promoted but technique NOT in the registry -> FAIL",
-              not ok({"entries": [dict(good, status="promoted", technique="made_up_technique")]}))
-        check("JUNK: promoted without a technique -> FAIL", not ok({"entries": [dict(good, status="promoted")]}))
-        check("harvest: entries AND none together -> FAIL",
-              not ok({"entries": [good], "none": "reused_only:paint_por_geometria"}))
+        check("JUNK: module-level line is not inside a def/class -> FAIL", not ok({"entries": [dict(good, source="gen.py:18")]}))
+        check("JUNK: a range that leaves the def -> FAIL", not ok({"entries": [dict(good, source="gen.py:2-18")]}))
+        check("TRIVIAL: a 1-statement def (gen.py:6-7) -> FAIL", not ok({"entries": [dict(good, source="gen.py:6-7")]}))
+        check("TRIVIAL: a pass-only def -> FAIL", not ok({"entries": [dict(good, source="gen.py:8-9")]}))
+        check("TRIVIAL: docstring + ... + return None -> FAIL", not ok({"entries": [dict(good, source="gen.py:10-13")]}))
+        check("control: a 3-statement def (gen.py:14-17) is accepted", ok({"entries": [dict(good, source="gen.py:14-17")]}))
+        for infra in ("harvest.py:130-140", "technique_registry.py:85-100", "motor_stamp.py:24-33", "bvh_glue.py:20-30"):
+            f, rng = infra.split(":")
+            check("INFRA: citing recetas/%s as an asset's own work -> FAIL" % f,
+                  not ok({"entries": [dict(good, source="recetas/%s:%s" % (f, rng))]}))
+        check("control: recetas/clown_gen.py:43-52 (a generator, not infrastructure) is citable -> PASS",
+              ok({"entries": [dict(good, source="recetas/clown_gen.py:43-52")]}))
+        check("DUP: the same source twice -> FAIL", not ok({"entries": [good, dict(good)]}))
+        check("DUP: the same source written with a different spacing -> FAIL",
+              not ok({"entries": [good, dict(good, source="gen.py: 2-5")]}))
+        check("DUP: the same technique twice from different sources -> FAIL",
+              not ok({"entries": [dict(good, status="promoted", technique="surface_decal"),
+                                  dict(good, source="gen.py:14-17", status="promoted", technique="surface_decal")]}))
+        check("control: two different sources and techniques -> PASS",
+              ok({"entries": [dict(good, status="promoted", technique="surface_decal"),
+                              dict(good, source="gen.py:14-17", status="promoted", technique="pose_solver")]}))
+        check("JUNK: why = 'aaaaaaaaaaaaaaaa' (one token) -> FAIL", not ok({"entries": [dict(good, why="aaaaaaaaaaaaaaaa")]}))
+        check("JUNK: why with 3 copies of one word -> FAIL (distinct words)", not ok({"entries": [dict(good, why="stuff stuff stuff")]}))
+        check("JUNK: why made of 2-letter words -> FAIL (>= 3 letters each)", not ok({"entries": [dict(good, why="to be or do it so")]}))
+        check("JUNK: empty why -> FAIL", not ok({"entries": [dict(good, why="")]}))
+        check("PROMO: technique present in registry_snapshot (already existed) -> FAIL",
+              not ok(prom("surface_decal"), snap=SNAP + ["surface_decal"]))
+        check("PROMO: manifest with NO registry_snapshot cannot prove novelty -> FAIL", not ok(prom("surface_decal"), snap=None))
+        check("PROMO: technique not in the registry -> FAIL", not ok(prom("made_up_technique")))
+        check("PROMO: promoted without a technique -> FAIL", not ok({"entries": [dict(good, status="promoted")]}))
+        check("PROMO: a technique that existed (paint_por_geometria, in the snapshot) cannot be claimed -> FAIL",
+              not ok(prom("paint_por_geometria")))
+        check("OWNERSHIP: source outside the asset (recetas/clown_gen.py) + generator does NOT call the technique -> FAIL",
+              not ok(prom("surface_decal", source="recetas/clown_gen.py:43-52")))
+        check("OWNERSHIP control: same source, generator imports AND calls the technique with part= -> PASS",
+              ok(prom("paint_por_geometria", source="recetas/clown_gen.py:43-52"), snap=[]))
+        check("OWNERSHIP: no manifest generators at all and an outside source -> FAIL",
+              not ok(prom("paint_por_geometria", source="recetas/clown_gen.py:43-52"), snap=[], gens=()))
+        check("harvest: entries AND none together -> FAIL", not ok({"entries": [good], "none": "reused_only:paint_por_geometria"}))
         check("JUNK: source file that does not exist -> FAIL", not ok({"entries": [dict(good, source="no_such.py:3")]}))
         check("JUNK: line beyond the end of the file -> FAIL", not ok({"entries": [dict(good, source="gen.py:99")]}))
         check("JUNK: source without a line -> FAIL", not ok({"entries": [dict(good, source="gen.py")]}))
-        check("JUNK: empty why -> FAIL", not ok({"entries": [dict(good, why="")]}))
-        check("JUNK: why = 'aaaaaaaaaaaaaaaa' (one token) -> FAIL", not ok({"entries": [dict(good, why="aaaaaaaaaaaaaaaa")]}))
         check("JUNK: status outside promoted/proposed -> FAIL", not ok({"entries": [dict(good, status="maybe")]}))
-        check("JUNK: one bad entry among good ones -> FAIL",
-              not ok({"entries": [good, dict(good, source="gen.py:99")]}))
+        check("JUNK: one bad entry among good ones -> FAIL", not ok({"entries": [good, dict(good, source="gen.py:99")]}))
         check("harvest: a section that is not an object -> FAIL", not ok(["gen.py:3"]))
 
-        # CLI + start_asset round trip
         env = dict(os.environ, MOTOR_GATE_STATE_DIR=tmp)
         start = [sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
                  "--technique", "body=paint_por_geometria", "--generator", "gen.py", "--output", "a.blend"]
@@ -2019,16 +2061,25 @@ def test_harvest_gate():
         doc = json.load(open(man))
         check("start_asset: writes an EMPTY harvest template (so the gate fails until filled)",
               r.returncode == 0 and doc.get("harvest") == {"entries": [], "none": ""}, r.stderr[-300:])
+        from recetas.technique_registry import REGISTRY as _REG
+        check("start_asset: writes registry_snapshot = the sorted registry ids at creation",
+              doc.get("registry_snapshot") == sorted(_REG))
         check("start_asset: the printed instructions mention the harvest step", "HARVEST" in r.stdout)
         hcli = [sys.executable, os.path.join(ROOT, "tools", "harvest_asset.py"), man]
         r = subprocess.run(hcli + ["--add", "gen.py:99", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
         check("harvest_asset: an out-of-range citation is REFUSED and the manifest is untouched",
               r.returncode == 1 and json.load(open(man))["harvest"] == {"entries": [], "none": ""})
-        r = subprocess.run(hcli + ["--add", "gen.py:2-4", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
+        r = subprocess.run(hcli + ["--add", "gen.py:2-5", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
         check("harvest_asset: a valid entry is saved", r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1, r.stdout)
+        r = subprocess.run(hcli + ["--add", "gen.py:2-5", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
+        check("harvest_asset: adding the same source again is REFUSED (duplicate)", r.returncode == 1)
+        m2 = json.load(open(man))
+        m2["registry_snapshot"] = ["bvh_glue"]
+        json.dump(m2, open(man, "w"))
         r = subprocess.run(start, capture_output=True, text=True, env=env)
-        check("start_asset: re-running it does NOT wipe an already recorded harvest",
-              r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1)
+        d3 = json.load(open(man))
+        check("start_asset: re-running it does NOT wipe a recorded harvest NOR refresh the registry_snapshot",
+              r.returncode == 0 and len(d3["harvest"]["entries"]) == 1 and d3["registry_snapshot"] == ["bvh_glue"])
         r = subprocess.run(hcli + ["--none", "nothing new here at all"], capture_output=True, text=True)
         check("harvest_asset: a free-text --none is REFUSED", r.returncode == 1)
         r = subprocess.run(hcli + ["--none", "reused_only:paint_por_geometria"], capture_output=True, text=True)

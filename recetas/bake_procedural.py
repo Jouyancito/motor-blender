@@ -134,7 +134,7 @@ def luma_stats(obj, name="Col"):
 
 
 def bake_procedural_to_float_color(obj, part=None, samples=8, name="Col",
-                                   need=600, min_spread=0.02):
+                                   need=600, min_spread=0.02, allow_low_poly=False):
     """Bake DIFFUSE -> FLOAT_COLOR `name`, rewire Base Color, stamp `obj`.
 
     Returns (luma_min, luma_max, luma_mean), or None when the mesh has fewer than
@@ -144,13 +144,19 @@ def bake_procedural_to_float_color(obj, part=None, samples=8, name="Col",
     a constant fill is indistinguishable from the white-mob bug. min_spread=None
     disables that check (for materials that really are one colour).
 
+    allow_low_poly=True is the explicit escape hatch: bake anyway below `need` vertices
+    (the source had none -- it always flattened). Use it only when the pattern really is
+    coarser than the mesh (large flat patches); a fine pattern on a sparse mesh bakes to a
+    muddy average that looks "fixed" in the stats (the 152-vertex snake), which is exactly
+    why the default refuses. The result is stamped with the recipe's technique like any bake.
+
     DELIBERATE DIFFERENCE from the source (_bake_vcol.bake_and_report): the source only
     PRINTED "PLANO, el bake no capturo nada" and carried on; here a flat bake raises
     SystemExit, because a build that continues has shipped the white-mob bug with a warning
     nobody reads. Below `need` vertices the source also returned None after flattening;
     this recipe additionally refuses to stamp TECHNIQUE for it (it stamps flat_fallback)."""
     ok, n = enough_vertices(obj, need)
-    if not ok:
+    if not ok and not allow_low_poly:
         flatten_to_base_colour(obj)
         # NOT stamped with TECHNIQUE: nothing was baked, so the object must not claim it.
         # The distinct marker keeps it a stamped part (not "unstamped geometry") while

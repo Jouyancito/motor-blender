@@ -117,12 +117,12 @@ def _harvest_row(report, manifest_path):
     try:
         with open(manifest_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
-        section, created, gens = manifest.get("harvest"), manifest.get("created"), manifest.get("generators")
+        section, snap, gens = manifest.get("harvest"), manifest.get("registry_snapshot"), manifest.get("generators")
     except Exception as e:  # noqa: BLE001
         report.add("harvest", NOT_TESTED, "manifest unreadable: %s" % e)
         return
     ok, problems, summary = harvest.validate(
-        section, os.path.dirname(os.path.dirname(os.path.abspath(manifest_path))), created, gens)
+        section, os.path.dirname(os.path.dirname(os.path.abspath(manifest_path))), snap, gens)
     if ok:
         report.add("harvest", PASS, summary)
         return

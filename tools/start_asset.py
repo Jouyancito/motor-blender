@@ -204,6 +204,9 @@ def main(argv=None):
         "helpers": helpers,
         "outputs": outputs,
         "parts": checked,
+        # registry ids that existed when this asset started: harvest `promoted` entries must
+        # be ABSENT from it (a technique that was already there was not learned here).
+        "registry_snapshot": sorted(REGISTRY),
     }
     out_dir = os.path.join(asset_dir, "_motor")
     os.makedirs(out_dir, exist_ok=True)
@@ -213,9 +216,12 @@ def main(argv=None):
     manifest["harvest"] = harvest_mod.empty_section()
     try:
         with open(path, encoding="utf-8") as fh:
-            prev = json.load(fh).get("harvest")
+            prev_doc = json.load(fh)
+        prev = prev_doc.get("harvest")
         if isinstance(prev, dict) and (prev.get("entries") or prev.get("none")):
             manifest["harvest"] = prev
+        if isinstance(prev_doc.get("registry_snapshot"), list):   # never refreshed: the snapshot is the
+            manifest["registry_snapshot"] = prev_doc["registry_snapshot"]   # registry AT CREATION
     except (OSError, ValueError, AttributeError):
         pass
     with open(path, "w", encoding="utf-8") as fh:

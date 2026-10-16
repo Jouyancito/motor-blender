@@ -13,7 +13,7 @@
 #           {"source": "rem_v8_body_gen.py:80-110",     # file:line, INSIDE the asset dir (or motor recetas/)
 #            "why": "MPFB human built headless with detailed helpers on",
 #            "status": "promoted",                      # promoted | proposed
-#            "technique": "mpfb_human_base"}]}          # promoted: must be registered AND not predate the manifest
+#            "technique": "mpfb_human_base"}]}          # promoted: registered now, ABSENT from manifest.registry_snapshot
 #
 #   (b) an explicit nothing, from a CLOSED list of reasons (free text is not accepted):
 #       "harvest": {"none": "reused_only:bvh_glue,paint_por_geometria"}   # each registered AND
@@ -22,18 +22,20 @@
 #
 # Source rules: the file resolves INSIDE the asset dir or the motor's recetas/ (no ../,
 # no absolute paths elsewhere, symlinks resolved), is a .py file, and the cited lines sit
-# inside ONE def/class body. A promoted technique must be a registry id whose module was
-# first committed AFTER the manifest was created (a technique that already existed was
-# not learned from this asset). Missing/empty section, a reason outside the closed list,
-# both forms at once, a one-word `why` -> FAIL. Use tools/harvest_asset.py to edit it.
+# inside ONE non-trivial def/class body (>= 3 statements, not pass/.../return None) and is
+# not motor infrastructure or an already-registered recipe. A promoted technique must be
+# registered now and ABSENT from the manifest's `registry_snapshot` (the sorted registry ids
+# start_asset recorded at creation: a technique that already existed was not learned here),
+# and must be claimed by this asset: its cited source lives in the asset dir, or a manifest
+# generator imports AND calls it with part=. Duplicate entries, a `why` without 3 distinct
+# 3-letter words, missing/empty section, a reason outside the closed list, both forms at
+# once -> FAIL. Use tools/harvest_asset.py to edit it.
 #
 # Honest limit: this proves the question was ANSWERED with checkable citations, not that
 # the answer is complete. It makes skipping the question a visible, failing act.
 import ast
 import os
 import re
-import subprocess
-import time
 
 try:
     from recetas.technique_registry import REGISTRY, is_registered, evidence, _key
@@ -41,8 +43,12 @@ except ImportError:  # recipes are also used with recetas/ itself on sys.path
     from technique_registry import REGISTRY, is_registered, evidence, _key
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MIN_WORDS = 3            # a `why` is a sentence, not a token
-MIN_WHY = 15
+MIN_WORDS = 3            # a `why` is a sentence: >= 3 DISTINCT words of >= 3 letters
+MIN_BODY_STMTS = 3       # a cited def/class must do something
+# Motor infrastructure: never an asset's own work (plus every registered recipe module, below).
+INFRA = {"harvest", "technique_registry", "motor_stamp", "verdict", "preflight_router", "router_knowledge",
+         "asset_spec", "rubric", "motor_assets", "mesh_quality", "physics", "gltf_check", "views",
+         "scale_ref", "use_size", "material_swatch", "probe_with_control", "preflight_destructivo"}
 STATUSES = ("promoted", "proposed")
 NONE_CATEGORIES = ("reused_only", "asset_specific")
 _SRC = re.compile(r"^(?P<path>.+):(?P<a>\d+)(?:-(?P<b>\d+))?$")
@@ -64,70 +70,95 @@ def _inside(real, roots):
     return any(real == r or real.startswith(r + os.sep) for r in roots)
 
 
+def _trivial(node):
+    """Why a def/class body is not worth harvesting, or None."""
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]                                       # docstring
+    def inert(st):
+        if isinstance(st, ast.Pass):
+            return True
+        if isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant) and st.value.value is Ellipsis:
+            return True
+        return isinstance(st, ast.Return) and (st.value is None or (
+            isinstance(st.value, ast.Constant) and st.value.value is None))
+    if all(inert(st) for st in body):
+        return "body is only pass/.../return None"
+    n = sum(isinstance(x, ast.stmt) for st in body for x in ast.walk(st))
+    if n < MIN_BODY_STMTS:
+        return "body has %d statement(s) (< %d)" % (n, MIN_BODY_STMTS)
+    return None
+
+
 def _check_source(src, asset_dir):
-    """None when `src` ('file.py:12' / 'file.py:12-30') is a real citation: inside the asset
-    dir or recetas/, a .py file, lines within ONE def/class body. Else the reason."""
+    """(error or None, real path or None). `src` ('file.py:12' / 'file.py:12-30') must be a
+    real citation: inside the asset dir or recetas/, a .py file, lines inside ONE def/class
+    with a non-trivial body, and not motor infrastructure."""
     m = _SRC.match(str(src or "").strip())
     if not m:
-        return "source %r is not file:line" % (src,)
+        return "source %r is not file:line" % (src,), None
     raw = os.path.expanduser(m.group("path"))
     cands = [raw] if os.path.isabs(raw) else [os.path.join(asset_dir or "", raw), os.path.join(REPO, raw)]
     real = next((os.path.realpath(c) for c in cands if os.path.isfile(c)), None)
     if not real:
-        return "source file %r does not exist (relative to the asset dir or the motor)" % m.group("path")
+        return "source file %r does not exist (relative to the asset dir or the motor)" % m.group("path"), None
     if not _inside(real, _roots(asset_dir)):
-        return "source %r resolves outside the asset dir and recetas/ (%s)" % (m.group("path"), real)
+        return "source %r resolves outside the asset dir and recetas/ (%s)" % (m.group("path"), real), None
     if not real.endswith(".py"):
-        return "source %r is not a .py file: only code can be harvested" % m.group("path")
+        return "source %r is not a .py file: only code can be harvested" % m.group("path"), None
+    stem = os.path.splitext(os.path.basename(real))[0]
+    in_recetas = real.startswith(os.path.realpath(os.path.join(REPO, "recetas")) + os.sep)
+    recipe_mods = {v["module"] for v in REGISTRY.values()}
+    if in_recetas and (stem in INFRA or stem in recipe_mods):
+        return ("source %s is motor infrastructure / an already-registered recipe: not this asset's own work"
+                % m.group("path")), None
     lo = int(m.group("a"))
     hi = int(m.group("b") or lo)
     try:
         with open(real, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), filename=real)
     except (OSError, SyntaxError, ValueError) as e:
-        return "cannot parse %s (%s)" % (real, e)
+        return "cannot parse %s (%s)" % (real, e), None
     if not (1 <= lo <= hi):
-        return "source %s has an invalid line range" % src
+        return "source %s has an invalid line range" % src, None
+    best = None
     for n in ast.walk(tree):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
                 and n.lineno <= lo and hi <= n.end_lineno:
-            return None
-    return "source %s:%d-%d is not inside a def/class body (module-level lines are not a technique)" % (
-        m.group("path"), lo, hi)
+            if best is None or n.lineno >= best.lineno:        # innermost
+                best = n
+    if best is None:
+        return "source %s:%d-%d is not inside a def/class body (module-level lines are not a technique)" % (
+            m.group("path"), lo, hi), None
+    why = _trivial(best)
+    if why:
+        return "source %s:%d-%d cites `%s` whose %s" % (m.group("path"), lo, hi, best.name, why), None
+    return None, real
 
 
-def _module_first_commit(module):
-    """Epoch of the commit that first added recetas/<module>.py, or None."""
-    try:
-        out = subprocess.run(
-            ["git", "-C", REPO, "log", "--diff-filter=A", "--format=%ct", "--", "recetas/%s.py" % module],
-            capture_output=True, text=True, timeout=30).stdout.split()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return min(int(x) for x in out) if out else None
+def _gen_paths(asset_dir, generators):
+    out = []
+    for g in generators or []:
+        g = os.path.expanduser(str(g))
+        out.append(g if os.path.isabs(g) else os.path.join(asset_dir or "", g))
+    return out
 
 
-def _created_epoch(created):
-    try:
-        return time.mktime(time.strptime(str(created), "%Y-%m-%dT%H:%M:%S"))
-    except (ValueError, TypeError):
-        return None
-
-
-def _check_promoted(technique, created):
+def _check_promoted(technique, real, snapshot, asset_dir, generators):
     if not is_registered(technique):
         return "promoted technique %r is not in recetas/technique_registry.py" % (technique,)
-    t0 = _created_epoch(created)
-    if t0 is None:
-        return "cannot prove %r postdates the asset: manifest has no valid `created`" % (technique,)
-    module = REGISTRY[_key(technique)]["module"]
-    t1 = _module_first_commit(module)
-    if t1 is None:
-        return "recetas/%s.py is not committed in git: cannot date the promotion" % module
-    if t1 <= t0:
-        return ("%r predates this asset (recetas/%s.py first committed %s, manifest created %s): "
-                "it was not learned from here"
-                % (technique, module, time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t1)), created))
+    if not isinstance(snapshot, list):
+        return ("cannot prove %r is new: the manifest has no `registry_snapshot` (re-run start_asset or "
+                "record one explicitly)" % (technique,))
+    if _key(technique) in {_key(x) for x in snapshot}:
+        return "%r was already registered when this asset started (registry_snapshot): not learned here" % (technique,)
+    in_asset = bool(real and asset_dir and (real == os.path.realpath(asset_dir)
+                                            or real.startswith(os.path.realpath(asset_dir) + os.sep)))
+    if not in_asset and not any(os.path.isfile(g) and evidence(g, technique)[0]
+                                for g in _gen_paths(asset_dir, generators)):
+        return ("this asset does not own %r: its source is not in the asset dir and no manifest generator "
+                "imports AND calls it with part=" % (technique,))
     return None
 
 
@@ -137,15 +168,12 @@ def _check_none(none, asset_dir, generators):
         return ["harvest `none` must be one of %s (closed list, no free text); got %r"
                 % (" | ".join("%s:<...>" % c for c in NONE_CATEGORIES), none[:60])]
     if cat == "asset_specific":
-        err = _check_source(arg.strip(), asset_dir)
+        err, _real = _check_source(arg.strip(), asset_dir)
         return ["asset_specific: " + err] if err else []
     techs = [t.strip() for t in arg.split(",") if t.strip()]
     if not techs:
         return ["reused_only needs a technique list"]
-    gens = []
-    for g in generators or []:
-        g = os.path.expanduser(str(g))
-        gens.append(g if os.path.isabs(g) else os.path.join(asset_dir or "", g))
+    gens = _gen_paths(asset_dir, generators)
     problems = []
     for t in techs:
         if not is_registered(t):
@@ -155,9 +183,9 @@ def _check_none(none, asset_dir, generators):
     return problems
 
 
-def validate(section, asset_dir=None, created=None, generators=None):
-    """(ok, problems, summary). `section` is manifest.get("harvest"); `created` and
-    `generators` come from the same manifest."""
+def validate(section, asset_dir=None, snapshot=None, generators=None):
+    """(ok, problems, summary). `section` is manifest.get("harvest"); `snapshot`
+    (manifest.registry_snapshot) and `generators` come from the same manifest."""
     if section is None:
         return False, ["manifest has NO `harvest` section (run tools/harvest_asset.py)"], ""
     if not isinstance(section, dict):
@@ -177,23 +205,33 @@ def validate(section, asset_dir=None, created=None, generators=None):
         return (False, problems, "") if problems else (True, [], "none: " + none_s[:70])
     if not isinstance(entries, list):
         return False, ["`entries` must be a list"], ""
-    problems = []
+    problems, seen_src, seen_tech = [], set(), set()
     for i, e in enumerate(entries):
         tag = "entries[%d]" % i
         if not isinstance(e, dict):
             problems.append("%s is not an object" % tag)
             continue
-        err = _check_source(e.get("source"), asset_dir)
+        err, real = _check_source(e.get("source"), asset_dir)
         if err:
             problems.append("%s: %s" % (tag, err))
-        why = str(e.get("why") or "").strip()
-        if len(why) < MIN_WHY or len(why.split()) < MIN_WORDS:
-            problems.append("%s: `why` must be a one-line sentence (>= %d words, >= %d chars)" % (tag, MIN_WORDS, MIN_WHY))
+        key = re.sub(r"\s+", "", str(e.get("source") or ""))
+        if key in seen_src:
+            problems.append("%s: duplicate source %s" % (tag, e.get("source")))
+        seen_src.add(key)
+        tech = _key(e.get("technique")) if e.get("technique") else None
+        if tech:
+            if tech in seen_tech:
+                problems.append("%s: technique %r listed twice" % (tag, e.get("technique")))
+            seen_tech.add(tech)
+        why = str(e.get("why") or "")
+        words = {w.lower() for w in re.findall(r"[^\W\d_]{3,}", why)}
+        if len(words) < MIN_WORDS:
+            problems.append("%s: `why` needs >= %d distinct words of >= 3 letters" % (tag, MIN_WORDS))
         st = e.get("status")
         if st not in STATUSES:
             problems.append("%s: status %r is not one of %s" % (tag, st, "/".join(STATUSES)))
         elif st == "promoted":
-            err = _check_promoted(e.get("technique"), created)
+            err = _check_promoted(e.get("technique"), real, snapshot, asset_dir, generators)
             if err:
                 problems.append("%s: %s" % (tag, err))
     if problems:

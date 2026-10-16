@@ -392,6 +392,17 @@ def main():
     check("bake_procedural control: 8-vertex mesh is NOT baked (None) and its white material becomes a deliberate tone",
           r is None and "Col" not in cub.data.color_attributes and all(abs(c - 1.0) > 0.1 for c in after),
           (r, after))
+    fresh()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cub3 = bpy.context.active_object
+    cm3 = bpy.data.materials.new("c3")
+    cm3.use_nodes = True
+    cub3.data.materials.append(cm3)
+    lo_ = bp.bake_procedural_to_float_color(cub3, part="body", samples=2, allow_low_poly=True, min_spread=None)
+    check("bake_procedural: allow_low_poly=True bakes an 8-vertex mesh anyway and stamps the recipe's technique",
+          lo_ is not None and "Col" in cub3.data.color_attributes
+          and "bake_procedural_to_float_color" in cub3.get("motor_technique", "") and cub3.get("motor_technique") != "flat_fallback",
+          (lo_, dict(cub3.items())))
     ob, mat = noisy_sphere()
     img = bpy.data.images.new("t", 4, 4)
     tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
@@ -707,9 +718,10 @@ def main():
 
     GEN_SRC = ("from recetas.bvh_glue import glue_to_surface\n"      # 1
                "def build(a, b):\n"                                 # 2
-               "    n = glue_to_surface(a, b, part='body')\n"       # 3
-               "    return n\n"                                     # 4
-               "X = 1\n")                                           # 5
+               "    k = len(a)\n"                                   # 3
+               "    n = glue_to_surface(a, b, part='body')\n"       # 4
+               "    return n + k\n"                                 # 5
+               "X = 1\n")                                           # 6
 
     def verified(harvest_section, outputs="blend", save=True):
         fresh()
@@ -723,7 +735,7 @@ def main():
         blend_ = os.path.join(d_, "a.blend")
         if save:
             bpy.ops.wm.save_as_mainfile(filepath=blend_)
-        doc_ = {"schema": 2, "subject": "gato", "created": "2026-01-01T00:00:00", "generators": ["gen.py"],
+        doc_ = {"schema": 2, "subject": "gato", "registry_snapshot": [], "generators": ["gen.py"],
                 "outputs": [blend_] if outputs == "blend" else outputs,
                 "parts": {"body": {"technique": "bvh_glue"}}}
         if harvest_section is not None:
@@ -733,7 +745,7 @@ def main():
         rep_ = VA.check(blend_, man_)
         return rep_, {r["prop"]: r for r in rep_.rows}
 
-    good_entry = {"source": "gen.py:2-4", "why": "glue strip keeps its proud offset", "status": "proposed"}
+    good_entry = {"source": "gen.py:2-5", "why": "glue strip keeps its proud offset", "status": "proposed"}
     rep, rows = verified({"entries": [good_entry]})
     check("verify_asset harvest: stamped asset + ONE entry -> overall PASS", rep.verdict() == PASS and rows["harvest"]["state"] == PASS, rep.rows)
     rep, rows = verified({"none": "reused_only:bvh_glue"})
@@ -815,6 +827,17 @@ def main():
         d_ = bpy.data.objects["d"]
         r_ = np.linalg.norm(vcoords(d_), axis=1) / scale
         return float(np.abs(r_ - 1).max())
+    def decal_lift(scale):
+        fresh()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=40, radius=scale)
+        t_ = bpy.context.active_object
+        bpy.ops.object.shade_smooth()
+        m_ = bpy.data.materials.new("m")
+        sd.surface_decal("d", t_, (0.1 * scale, -5 * scale, 0.2 * scale), (0, 1, 0), 0.01 * scale, 0.01 * scale, m_)
+        return float(np.linalg.norm(vcoords(bpy.data.objects["d"])[0])) / scale - 1.0   # centre height over the sphere
+    l1, l50 = decal_lift(1.0), decal_lift(50.0)
+    check("surface_decal: the lift is a ratio of the bbox diagonal too (centre height %.2e vs %.2e of the radius at 1x / 50x)" % (l1, l50),
+          abs(l1 - l50) < 2e-4 and l1 > 0 and abs(sd.LIFT_RATIO * sd.RANA_DIAG - 0.00006) < 1e-12, (l1, l50))
     check("surface_decal: a 50x larger target projects equally well (probe distances scale with the bbox diagonal)",
           decal_spread(1.0) < 0.01 and decal_spread(50.0) < 0.01, (decal_spread(1.0), decal_spread(50.0)))
 

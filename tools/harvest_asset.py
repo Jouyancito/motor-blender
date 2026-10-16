@@ -38,7 +38,7 @@ def main(argv=None):
         manifest = json.load(fh)
     section = manifest.get("harvest")
     if args.show:
-        ok, problems, summary = harvest.validate(section, asset_dir, manifest.get("created"), manifest.get("generators"))
+        ok, problems, summary = harvest.validate(section, asset_dir, manifest.get("registry_snapshot"), manifest.get("generators"))
         print(json.dumps(section, indent=2, ensure_ascii=False))
         print("VALID: %s" % summary if ok else "INVALID:\n  - " + "\n  - ".join(problems))
         return 0 if ok else 1
@@ -51,7 +51,7 @@ def main(argv=None):
             entry["technique"] = args.technique
         entries = list((section or {}).get("entries") or [])
         new = {"entries": entries + [entry], "none": ""}
-    ok, problems, summary = harvest.validate(new, asset_dir, manifest.get("created"), manifest.get("generators"))
+    ok, problems, summary = harvest.validate(new, asset_dir, manifest.get("registry_snapshot"), manifest.get("generators"))
     if not ok:
         print("REFUSED (manifest untouched):\n  - " + "\n  - ".join(problems))
         return 1

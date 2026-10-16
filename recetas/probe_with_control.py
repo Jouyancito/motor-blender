@@ -77,13 +77,20 @@ class ProbeSet:
         try:
             value = measure(subject)
             ctrl_value = measure(control)
-        except Exception as e:  # noqa: BLE001 -- a crashed probe is not a clean probe
+            clean = bool(ok(value))
+            fails = not ok(ctrl_value)
+            fired = fails and bool(intended(ctrl_value))
+            vacuous = clean and bool(intended(value))
+        except Exception as e:  # noqa: BLE001 -- a crash ANYWHERE (measure, ok, intended) is not a clean probe
             return self._record(name, NOT_TESTED, "probe crashed: %s: %s" % (type(e).__name__, e),
                                 None, None, "")
         fmt = detail or (lambda v: repr(v))
-        clean = bool(ok(value))
-        fails = not ok(ctrl_value)
-        fired = fails and bool(intended(ctrl_value))
+        if vacuous:
+            # `intended` is True on the CLEAN subject: it cannot tell the defect from a good
+            # reading (lambda v: True would make every control "fire"), so it proves nothing.
+            return self._record(name, NOT_TESTED,
+                                "%s   [control: %s]   <-- intended predicate is vacuous: it is also true on the clean subject"
+                                % (fmt(value), fmt(ctrl_value)), clean, False, fmt(ctrl_value))
         text = fmt(value)
         text += "   [control: %s]" % fmt(ctrl_value)
         if clean and not fired:
