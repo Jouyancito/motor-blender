@@ -3,11 +3,11 @@
 
     python3 tools/harvest_asset.py <asset_dir>/_motor/manifest.json --add "<file:line>" "<one-line why>" \
         [--status promoted|proposed] [--technique <registry id>]
-    python3 tools/harvest_asset.py <manifest> --none "<why nothing new was learned>"
+    python3 tools/harvest_asset.py <manifest> --none "reused_only:<technique,...>" | "asset_specific:<file:line>"
     python3 tools/harvest_asset.py <manifest> --show
 
 Every write is validated by recetas/harvest.py before it is saved; an invalid entry is
-refused and the manifest is left untouched. --add after --none (or the reverse) replaces
+refused and the manifest is left untouched. --none takes a CLOSED category: reused_only:<registered techniques the generators call with part=> or asset_specific:<file:line of real asset code>. --add after --none (or the reverse) replaces
 the other form: a section is entries OR an explicit none, never both.
 """
 import argparse
@@ -38,7 +38,7 @@ def main(argv=None):
         manifest = json.load(fh)
     section = manifest.get("harvest")
     if args.show:
-        ok, problems, summary = harvest.validate(section, asset_dir)
+        ok, problems, summary = harvest.validate(section, asset_dir, manifest.get("created"), manifest.get("generators"))
         print(json.dumps(section, indent=2, ensure_ascii=False))
         print("VALID: %s" % summary if ok else "INVALID:\n  - " + "\n  - ".join(problems))
         return 0 if ok else 1
@@ -51,7 +51,7 @@ def main(argv=None):
             entry["technique"] = args.technique
         entries = list((section or {}).get("entries") or [])
         new = {"entries": entries + [entry], "none": ""}
-    ok, problems, summary = harvest.validate(new, asset_dir)
+    ok, problems, summary = harvest.validate(new, asset_dir, manifest.get("created"), manifest.get("generators"))
     if not ok:
         print("REFUSED (manifest untouched):\n  - " + "\n  - ".join(problems))
         return 1

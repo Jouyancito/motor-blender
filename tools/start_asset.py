@@ -234,7 +234,7 @@ def main(argv=None):
     print("  HARVEST (required for a PASS): before the verdict, record what this asset taught the motor:")
     print("    python3 %s/tools/harvest_asset.py %s --add <file:line> \"<why>\" [--status promoted --technique <id>]"
           % (REPO, path))
-    print("    python3 %s/tools/harvest_asset.py %s --none \"<why nothing new>\"" % (REPO, path))
+    print("    python3 %s/tools/harvest_asset.py %s --none \"reused_only:<techs>|asset_specific:<file:line>\"" % (REPO, path))
     print("  Blender runs for this asset are now unblocked. Build THROUGH the "
           "motor (motor_run.py + gates); the manifest only proves the declaration.")
     return 0

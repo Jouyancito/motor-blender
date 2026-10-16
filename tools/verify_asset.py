@@ -100,12 +100,37 @@ def _declared_outputs(manifest, manifest_path):
 def check(blend, manifest_path):
     report = Report("VERIFY %s" % os.path.basename(blend))
     try:
-        return _check(report, blend, manifest_path)
+        _check(report, blend, manifest_path)
     except Exception:  # noqa: BLE001 -- a crash must never read as a pass or vanish
         import traceback
         report.add("verifier_crashed", NOT_TESTED,
                    "verify_asset crashed: " + traceback.format_exc().strip().splitlines()[-1])
-        return report
+    _harvest_row(report, manifest_path)
+    return report
+
+
+def _harvest_row(report, manifest_path):
+    """HARVEST gate (cosecha 2026-10-16), judged AFTER everything else so it cannot rewrite
+    the precedence: when the blend could not be judged at all (a NOT_TESTED row and no FAIL),
+    a harvest problem is recorded as NOT_TESTED too, so an unreadable/crashed run stays
+    NOT_TESTED instead of turning into FAIL. Once the blend is judged, a bad harvest FAILS."""
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        section, created, gens = manifest.get("harvest"), manifest.get("created"), manifest.get("generators")
+    except Exception as e:  # noqa: BLE001
+        report.add("harvest", NOT_TESTED, "manifest unreadable: %s" % e)
+        return
+    ok, problems, summary = harvest.validate(
+        section, os.path.dirname(os.path.dirname(os.path.abspath(manifest_path))), created, gens)
+    if ok:
+        report.add("harvest", PASS, summary)
+        return
+    detail = "; ".join(problems[:3]) + (" [%d more]" % (len(problems) - 3) if len(problems) > 3 else "") \
+        + " -- fill it with: python3 tools/harvest_asset.py %s --add <file:line> <why> | --none <category>" % manifest_path
+    blend_unjudged = bool(report.untested) and not report.failed
+    report.add("harvest", NOT_TESTED if blend_unjudged else FAIL,
+               ("(blend not judged, so reported as NOT_TESTED, not FAIL) " if blend_unjudged else "") + detail)
 
 
 def _check(report, blend, manifest_path):
@@ -117,17 +142,6 @@ def _check(report, blend, manifest_path):
     except Exception as e:  # noqa: BLE001
         report.add("manifest_readable", NOT_TESTED, "cannot read manifest: %s" % e)
         return report
-    # HARVEST gate (cosecha 2026-10-16): pure manifest check, so it runs even when the
-    # blend later cannot be judged. No `harvest` section / empty section -> FAIL.
-    ok, problems, summary = harvest.validate(
-        manifest.get("harvest"), os.path.dirname(os.path.dirname(os.path.abspath(manifest_path))))
-    if ok:
-        report.add("harvest", PASS, summary)
-    else:
-        report.add("harvest", FAIL, "; ".join(problems[:3]) + (
-            " [%d more]" % (len(problems) - 3) if len(problems) > 3 else "")
-            + " -- fill it with: python3 tools/harvest_asset.py %s --add <file:line> <why> | --none <reason>"
-            % manifest_path)
     declared = _declared_outputs(manifest, manifest_path)
     if declared is not None and os.path.realpath(blend) not in declared:
         report.add("blend_declared", FAIL,

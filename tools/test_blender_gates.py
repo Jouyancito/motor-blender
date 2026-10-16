@@ -705,7 +705,13 @@ def main():
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import verify_asset as VA
 
-    def verified(harvest_section, note):
+    GEN_SRC = ("from recetas.bvh_glue import glue_to_surface\n"      # 1
+               "def build(a, b):\n"                                 # 2
+               "    n = glue_to_surface(a, b, part='body')\n"       # 3
+               "    return n\n"                                     # 4
+               "X = 1\n")                                           # 5
+
+    def verified(harvest_section, outputs="blend", save=True):
         fresh()
         bpy.ops.mesh.primitive_cube_add(size=1.0)
         cube_ = bpy.context.active_object
@@ -713,11 +719,12 @@ def main():
         cube_["motor_technique"] = "bvh_glue"
         d_ = tempfile.mkdtemp()
         os.makedirs(os.path.join(d_, "_motor"))
-        src_ = os.path.join(d_, "gen.py")
-        open(src_, "w").write("\n".join("l%d" % i for i in range(1, 31)) + "\n")
+        open(os.path.join(d_, "gen.py"), "w").write(GEN_SRC)
         blend_ = os.path.join(d_, "a.blend")
-        bpy.ops.wm.save_as_mainfile(filepath=blend_)
-        doc_ = {"schema": 2, "subject": "gato", "generators": ["gen.py"], "outputs": [blend_],
+        if save:
+            bpy.ops.wm.save_as_mainfile(filepath=blend_)
+        doc_ = {"schema": 2, "subject": "gato", "created": "2026-01-01T00:00:00", "generators": ["gen.py"],
+                "outputs": [blend_] if outputs == "blend" else outputs,
                 "parts": {"body": {"technique": "bvh_glue"}}}
         if harvest_section is not None:
             doc_["harvest"] = harvest_section
@@ -726,19 +733,90 @@ def main():
         rep_ = VA.check(blend_, man_)
         return rep_, {r["prop"]: r for r in rep_.rows}
 
-    good_entry = {"source": "gen.py:5-9", "why": "glue strip keeps its proud offset", "status": "proposed"}
-    rep, rows = verified({"entries": [good_entry]}, "one entry")
+    good_entry = {"source": "gen.py:2-4", "why": "glue strip keeps its proud offset", "status": "proposed"}
+    rep, rows = verified({"entries": [good_entry]})
     check("verify_asset harvest: stamped asset + ONE entry -> overall PASS", rep.verdict() == PASS and rows["harvest"]["state"] == PASS, rep.rows)
-    rep, rows = verified({"none": "built only from existing recipes; nothing new surfaced"}, "none")
-    check("verify_asset harvest: stamped asset + `none` with a reason -> overall PASS", rep.verdict() == PASS, rep.rows)
-    rep, rows = verified(None, "missing")
+    rep, rows = verified({"none": "reused_only:bvh_glue"})
+    check("verify_asset harvest: stamped asset + reused_only evidenced by the generator -> overall PASS", rep.verdict() == PASS, rep.rows)
+    rep, rows = verified(None)
     check("verify_asset harvest control: manifest with NO harvest section -> FAIL (everything else is clean)",
           rep.verdict() == FAIL and rows["harvest"]["state"] == FAIL and rows["part:body:exists"]["state"] == PASS, rep.rows)
-    rep, rows = verified({"entries": [], "none": ""}, "empty")
+    rep, rows = verified({"entries": [], "none": ""})
     check("verify_asset harvest control: EMPTY section -> FAIL", rep.verdict() == FAIL and rows["harvest"]["state"] == FAIL)
-    rep, rows = verified({"entries": [dict(good_entry, source="gen.py:99")]}, "bad cite")
+    rep, rows = verified({"none": "aaaaaaaaaaaaaaaa"})
+    check("verify_asset harvest control: junk `none` -> FAIL", rows["harvest"]["state"] == FAIL)
+    rep, rows = verified({"entries": [dict(good_entry, source="gen.py:99")]})
     check("verify_asset harvest control: an entry citing a line that does not exist -> FAIL", rows["harvest"]["state"] == FAIL)
     check("verify_asset harvest: the FAIL row tells you the command that fixes it", "harvest_asset.py" in rows["harvest"]["detail"])
+    # precedence: a blend that could not be judged stays NOT_TESTED even with a bad harvest
+    rep, rows = verified(None, outputs="blend", save=False)
+    check("PRECEDENCE: unreadable blend + MISSING harvest -> overall NOT_TESTED (harvest does not turn it into FAIL)",
+          rep.verdict() == "NOT_TESTED" and rows["harvest"]["state"] == "NOT_TESTED", rep.rows)
+    rep, rows = verified(None, outputs=5)
+    check("PRECEDENCE: crashed verifier + missing harvest -> overall NOT_TESTED",
+          rep.verdict() == "NOT_TESTED" and rows["verifier_crashed"]["state"] == "NOT_TESTED", rep.rows)
+    rep, rows = verified(None, outputs=["/nowhere/else.blend"])
+    check("PRECEDENCE control: a REAL failure (undeclared blend) stays FAIL", rep.verdict() == FAIL)
+    rep, rows = verified({"entries": [good_entry]}, outputs="blend", save=False)
+    check("PRECEDENCE control: unreadable blend + VALID harvest -> NOT_TESTED, harvest row PASS",
+          rep.verdict() == "NOT_TESTED" and rows["harvest"]["state"] == PASS)
+
+    # ---- review round: shading world space, procedural fallback + engine restore, pose stamps, decal scale
+    from recetas import bake_shading_check as bsc2
+    base = pit_surface(stain)
+    r_a = bsc2.bake_shading_check(pit_surface(painted_shadow)).rows[0]["detail"]
+    moved = pit_surface(painted_shadow)
+    moved.location = (3.0, -2.0, 1.0)
+    moved.rotation_euler = (0.4, 0.2, 0.9)
+    bpy.context.view_layer.update()
+    r_b = bsc2.bake_shading_check(moved).rows[0]["detail"]
+    check("bake_shading_check: world-space rays -- a moved+rotated asset reads the SAME r (%s vs %s)" % (r_a[:32], r_b[:32]),
+          r_a[:34] == r_b[:34], (r_a, r_b))
+    fresh()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cub2 = bpy.context.active_object
+    bp.bake_procedural_to_float_color(cub2, part="body", samples=2)
+    check("bake_procedural: a sparse mesh is NOT stamped with the recipe's technique (flat_fallback marker; verify's technique row would FAIL)",
+          cub2.get("motor_technique") == "flat_fallback" and cub2.get("motor_part") == "body", dict(cub2.items()))
+    ob, mat = noisy_sphere()
+    scene_ = bpy.context.scene
+    scene_.render.engine = "BLENDER_EEVEE"
+    ob.hide_set(True)              # a hidden object cannot be baked: RuntimeError
+    try:
+        bp.bake_procedural_to_float_color(ob, part="body", samples=2, min_spread=None)
+        raised_ = False
+    except Exception:
+        raised_ = True
+    check("bake_procedural: engine restored after a FAILED bake (control: the bake really did fail)",
+          raised_ and scene_.render.engine == "BLENDER_EEVEE", (raised_, scene_.render.engine))
+    ob, mat = noisy_sphere()
+    scene_ = bpy.context.scene
+    scene_.render.engine = "BLENDER_EEVEE"
+    bp.bake_procedural_to_float_color(ob, part="body", samples=2)
+    check("bake_procedural: engine restored after a successful bake", scene_.render.engine == "BLENDER_EEVEE")
+    fresh()
+    pbody = MH.mpfb_human_base(dict(gender=0.0), dict(asian=1.0), name="pbody", part="body")
+    prig2 = MH.add_human_rig(pbody, "prig2", part="body")
+    for m_ in pbody.modifiers:
+        pass
+    PS.reset_pose(prig2)
+    PS.aim(prig2, "upperleg01.L", ("head", "lowerleg01.L"), Vector((0.1, -0.2, -0.97)), part="body")
+    check("pose_solver.aim: the mesh bound to the rig by an Armature modifier ends up stamped too (verify requires ALL objects of a part)",
+          "pose_solver" in pbody.get("motor_technique", "") and "pose_solver" in prig2.get("motor_technique", "")
+          and any(m_.type == "ARMATURE" for m_ in pbody.modifiers), (dict(pbody.items()), [m_.type for m_ in pbody.modifiers]))
+    # decal probe distances scale with the target
+    def decal_spread(scale):
+        fresh()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=64, ring_count=40, radius=scale)
+        t_ = bpy.context.active_object
+        bpy.ops.object.shade_smooth()
+        m_ = bpy.data.materials.new("m")
+        sd.surface_decal("d", t_, (0.1 * scale, -5 * scale, 0.2 * scale), (0, 1, 0), 0.2 * scale, 0.15 * scale, m_)
+        d_ = bpy.data.objects["d"]
+        r_ = np.linalg.norm(vcoords(d_), axis=1) / scale
+        return float(np.abs(r_ - 1).max())
+    check("surface_decal: a 50x larger target projects equally well (probe distances scale with the bbox diagonal)",
+          decal_spread(1.0) < 0.01 and decal_spread(50.0) < 0.01, (decal_spread(1.0), decal_spread(50.0)))
 
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))

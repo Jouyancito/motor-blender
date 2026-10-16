@@ -73,12 +73,17 @@ def rot_about(rig, bone, pivot, R3):
 
 def aim(rig, bone, end, direction, part=None):
     """Rotate `bone` about its head so that (end - head) points along `direction`
-    (armature space). `end` is ("head"|"tail", bone_name). Stamps the rig."""
+    (armature space). `end` is ("head"|"tail", bone_name). Stamps the rig AND every object
+    bound to it by an Armature modifier: verify_asset requires ALL objects of a part to carry
+    the declared technique, and the posed body mesh is part of that part."""
     J = rig.pose.bones[bone].head.copy()
     d0 = (pt(rig, end) - J).normalized()
     q = d0.rotation_difference(Vector(direction).normalized())
     rot_about(rig, bone, J, q.to_matrix())
     _motor_stamp(rig, part, TECHNIQUE)
+    for ob in bpy.data.objects:
+        if ob.type == "MESH" and any(m.type == "ARMATURE" and m.object == rig for m in ob.modifiers):
+            _motor_stamp(ob, part, TECHNIQUE)
 
 
 def swing_axis(rig, bone, deg, axis):

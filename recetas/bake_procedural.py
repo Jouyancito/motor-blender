@@ -34,6 +34,7 @@ except ImportError:  # recipes are also used with recetas/ itself on sys.path
     from motor_stamp import stamp_object as _motor_stamp
 
 TECHNIQUE = "bake_procedural_to_float_color"
+FALLBACK_MARK = "flat_fallback"   # sparse mesh: flattened, NOT baked
 
 
 def enough_vertices(obj, need=600):
@@ -65,13 +66,29 @@ def flatten_to_base_colour(obj, fallback=(0.55, 0.55, 0.58)):
 
 
 def _bake_diffuse(obj, samples, name):
+    scene = bpy.context.scene
+    prev_engine, prev_samples, prev_device = scene.render.engine, None, None
+    try:
+        prev_samples = scene.cycles.samples
+        prev_device = scene.cycles.device
+    except AttributeError:   # cycles not registered yet
+        pass
+    try:
+        _bake_diffuse_inner(obj, samples, name)
+    finally:                 # a failed bake must not leave the scene on Cycles/CPU/low samples
+        scene.render.engine = prev_engine
+        if prev_samples is not None:
+            scene.cycles.samples = prev_samples
+            scene.cycles.device = prev_device
+
+
+def _bake_diffuse_inner(obj, samples, name):
     me = obj.data
     if name in me.color_attributes:
         me.color_attributes.remove(me.color_attributes[name])
     me.color_attributes.new(name=name, type="FLOAT_COLOR", domain="CORNER")
     me.color_attributes.active_color_index = me.color_attributes.find(name)
     scene = bpy.context.scene
-    prev_engine = scene.render.engine
     scene.render.engine = "CYCLES"
     scene.cycles.samples = samples
     scene.cycles.device = "CPU"          # deterministic; GPU bakes vary per driver
@@ -85,7 +102,6 @@ def _bake_diffuse(obj, samples, name):
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.bake(type="DIFFUSE")
-    scene.render.engine = prev_engine
 
 
 def _rewire_base_colour(obj, name):
@@ -126,11 +142,20 @@ def bake_procedural_to_float_color(obj, part=None, samples=8, name="Col",
     material is flattened to a deliberate non-white tone, and the object is still
     stamped. Raises SystemExit when the bake came out flat (spread <= min_spread):
     a constant fill is indistinguishable from the white-mob bug. min_spread=None
-    disables that check (for materials that really are one colour)."""
+    disables that check (for materials that really are one colour).
+
+    DELIBERATE DIFFERENCE from the source (_bake_vcol.bake_and_report): the source only
+    PRINTED "PLANO, el bake no capturo nada" and carried on; here a flat bake raises
+    SystemExit, because a build that continues has shipped the white-mob bug with a warning
+    nobody reads. Below `need` vertices the source also returned None after flattening;
+    this recipe additionally refuses to stamp TECHNIQUE for it (it stamps flat_fallback)."""
     ok, n = enough_vertices(obj, need)
     if not ok:
         flatten_to_base_colour(obj)
-        _motor_stamp(obj, part, TECHNIQUE)
+        # NOT stamped with TECHNIQUE: nothing was baked, so the object must not claim it.
+        # The distinct marker keeps it a stamped part (not "unstamped geometry") while
+        # verify_asset's part:<p>:technique row FAILS for a part that declared this recipe.
+        _motor_stamp(obj, part, FALLBACK_MARK)
         return None
     _bake_diffuse(obj, samples, name)
     _rewire_base_colour(obj, name)

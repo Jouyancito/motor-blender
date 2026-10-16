@@ -19,6 +19,7 @@ Run:
 
 import os
 import sys
+import time
 import shutil
 import subprocess
 import tempfile
@@ -36,6 +37,7 @@ from recetas import views                                     # noqa: E402
 from recetas import rubric as rubric_mod                      # noqa: E402
 
 _results = []
+REPO_ROOT = ROOT
 
 
 def check(name, condition, detail=""):
@@ -1849,57 +1851,53 @@ def test_registry_integrity():
 
 
 def test_probe_with_control():
-    print("\nprobe_with_control (a clean reading needs a control that fired)")
+    print("\nprobe_with_control (a clean reading needs a control that fired FOR THE INTENDED REASON)")
     from recetas import probe_with_control as pwc
     from recetas.verdict import PASS as P, FAIL as F, NOT_TESTED as NT
     st = lambda ps: ps.report.rows[-1]["state"]
+    inside = lambda pts: sum(1 for x in pts if x < 0)
+    clean, shrunk, same = [1, 2, 3], [-1, 2, -3], [1, 2, 3]
     ps = pwc.ProbeSet("t")
-    ps.zero("clean+fired", 0, 7)
-    check("clean subject + control fired -> PASS", st(ps) == P)
-    ps.zero("clean+blind", 0, 0)
-    check("clean subject + control that did NOT fire -> NOT_TESTED, never PASS", st(ps) == NT)
+    ps.zero("clean+fired", inside, clean, shrunk)
+    check("clean subject + control that registers the defect -> PASS", st(ps) == P)
+    ps.zero("clean+blind", inside, clean, same)
+    check("clean subject + control identical in effect (instrument cannot see) -> NOT_TESTED, never PASS", st(ps) == NT)
     check("the blind row says why", "instrument blind" in ps.report.rows[-1]["detail"])
-    ps.zero("defect", 3, 9)
+    ps.zero("defect", inside, [-1, 2], shrunk)
     check("defective subject -> FAIL", st(ps) == F)
-    ps.zero("defect+blind", 3, 0)
+    ps.zero("defect+blind", inside, [-1, 2], same)
     check("defective subject is FAIL even when the control slipped (a defect is a defect)", st(ps) == F)
-    ps.row("no_control", True, "42 mm")
-    check("clean subject with NO control supplied -> NOT_TESTED", st(ps) == NT)
-    ps.row("no_control_bad", False, "42 mm")
-    check("defective subject with no control -> FAIL", st(ps) == F)
-    check("aggregate verdict of a mixed set is FAIL; a set with only PASS+NOT_TESTED is NOT_TESTED",
-          ps.report.verdict() == F)
+    check("aggregate verdict of a mixed set is FAIL", ps.report.verdict() == F)
     ps2 = pwc.ProbeSet("t2")
-    ps2.zero("a", 0, 5)
-    ps2.zero("b", 0, 0)
-    check("one blind probe keeps the whole set from passing (verdict NOT_TESTED)",
-          ps2.report.verdict() == NT)
-    # callable API: the SAME instrument on subject and control
-    def count_inside(pts):
-        return sum(1 for x in pts if x < 0)
+    ps2.zero("a", inside, clean, shrunk)
+    ps2.zero("b", inside, clean, same)
+    check("one blind probe keeps the whole set from passing (verdict NOT_TESTED)", ps2.report.verdict() == NT)
+    # WRONG REASON: the control fails the ok() test, but not for the defect it was built to expose
     ps3 = pwc.ProbeSet("t3")
-    ps3.probe("clear", count_inside, lambda n: n == 0, [1, 2, 3], [-1, 2, -3])
-    check("probe(): clean subject, shrunken control hits 2 -> PASS", st(ps3) == P)
-    ps3.probe("blind", count_inside, lambda n: n == 0, [1, 2, 3], [1, 2, 3])
-    check("probe(): control identical to subject (cannot see the defect) -> NOT_TESTED", st(ps3) == NT)
-    ps3.probe("dirty", count_inside, lambda n: n == 0, [-1, 2], [-1, -2])
-    check("probe(): defective subject -> FAIL", st(ps3) == F)
-    ps3.probe("crash", lambda x: 1 / 0, lambda n: True, [1], [1])
-    check("probe(): a measure() that raises is NOT_TESTED, not a clean pass", st(ps3) == NT)
+    measure = lambda d: d
+    ps3.probe("wrong_reason", measure, lambda d: d["inside"] == 0 and d["gap"] < 1, {"inside": 0, "gap": 0},
+              {"inside": 0, "gap": 9}, intended=lambda d: d["inside"] > 0)
+    check("control that fails for ANOTHER reason (gap, not penetration) -> NOT_TESTED, 'not for the intended defect'",
+          st(ps3) == NT and "intended defect" in ps3.report.rows[-1]["detail"])
+    ps3.probe("right_reason", measure, lambda d: d["inside"] == 0, {"inside": 0}, {"inside": 4},
+              intended=lambda d: d["inside"] > 0)
+    check("control that fails for the intended reason -> PASS", st(ps3) == P)
+    ps3.probe("crash", lambda x: 1 / 0, lambda n: True, [1], [1], intended=lambda n: True)
+    check("a measure() that raises is NOT_TESTED, not a clean pass", st(ps3) == NT)
+    try:
+        ps3.probe("noint", measure, lambda d: True, {}, {}, intended=None)
+        raised = False
+    except TypeError:
+        raised = True
+    check("probe() without `intended` is refused (no 'any reason' path)", raised)
+    check("there is NO public way to self-declare a fired control (no row() / control_fired)",
+          not hasattr(pwc.ProbeSet, "row") and "control_fired=" not in open(pwc.__file__).read().split("def probe")[0].split("class ProbeSet")[1].split("def _record")[0])
     tmp = tempfile.mkdtemp()
     try:
         j = json.load(open(ps3.to_json(os.path.join(tmp, "p.json"))))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    check("to_json keeps control_fired per row",
-          [r["control_fired"] for r in j["rows"]][:2] == [True, False] and j["verdict"] == F)
-    # truth table vs the original rem_v8_measure.row(): same ok flag, PASS only with a fired control
-    for ok in (True, False):
-        for fired in (True, False, None):
-            q = pwc.ProbeSet("tt")
-            q.row("x", ok, "", control_fired=fired)
-            want = F if not ok else (P if fired else NT)
-            check("truth table ok=%s control_fired=%s -> %s" % (ok, fired, want), st(q) == want)
+    check("to_json keeps control_fired per row", [r["control_fired"] for r in j["rows"]][:2] == [False, True])
 
 
 def test_bake_shading_pure():
@@ -1913,14 +1911,21 @@ def test_bake_shading_pure():
     stains = [0.5 + 0.1 * rs.random() for _ in xs]                    # position noise, uncorrelated
     st = lambda ys: bsc.judge(xs, ys)[0].report.rows[-1]["state"]
     check("known-FAIL: luma = 0.8 - 0.6 * occlusion (baked shadow) -> FAIL", st(painted) == F)
-    check("known-PASS: uncorrelated stains -> PASS (control fired)", st(stains) == P)
+    check("known-PASS: uncorrelated stains -> PASS (the realistic painted-shadow control fired)", st(stains) == P)
     check("flat colour (no luma variance) -> NOT_TESTED, not PASS", st([0.5] * len(xs)) == NT)
-    flat_occ = bsc.judge([0.0] * 400, stains)[0].report.rows[-1]["state"]
-    check("blind instrument: occlusion all zero (rays never hit anything) -> NOT_TESTED, not PASS", flat_occ == NT)
+    check("blind instrument: occlusion all zero (rays never hit anything) -> NOT_TESTED",
+          bsc.judge([0.0] * 400, stains)[0].report.rows[-1]["state"] == NT)
     check("too few samples (10) -> NOT_TESTED", bsc.judge(xs[:10], stains[:10])[0].report.rows[-1]["state"] == NT)
+    noisy = [0.5 + 4.0 * (rs.random() - 0.5) for _ in xs]            # colour noise 40x the painted amplitude
+    check("INSENSITIVE on this asset: colour noise swamps a realistic shadow -> NOT_TESTED, not a PASS",
+          st(noisy) == NT)
     r, rc = bsc.judge(xs, stains)[1:]
-    check("the in-gate control reads strongly negative (r_ctrl = %.3f) while stains read ~0 (r = %.3f)" % (rc, r),
-          rc < -0.9 and abs(r) < 0.15)
+    ctrl = bsc.painted_shadow_copy(xs, stains)
+    check("the control goes through the same pearson on a copy of the REAL luma (r_ctrl = %.3f, r = %.3f)" % (rc, r),
+          rc <= bsc.R_MIN and abs(r) < 0.15 and ctrl != stains and abs(bsc.pearson(xs, ctrl) - rc) < 1e-12)
+    pure_noise = [rs.random() for _ in xs]
+    check("control is NOT tautological: on pure luma noise its r is not a constant -1 (r_ctrl = %.3f)" % bsc.judge(xs, pure_noise)[2],
+          bsc.judge(xs, pure_noise)[2] > -0.99)
     check("pearson: perfect line = 1, constant = None",
           abs(bsc.pearson([1, 2, 3], [2, 4, 6]) - 1) < 1e-9 and bsc.pearson([1, 1, 1], [1, 2, 3]) is None)
 
@@ -1929,73 +1934,107 @@ def test_harvest_gate():
     print("\nharvest gate (recetas/harvest.py + start_asset + harvest_asset)")
     from recetas import harvest as H
     tmp = tempfile.mkdtemp()
-    src = os.path.join(tmp, "gen.py")
-    open(src, "w").write("\n".join("line %d" % i for i in range(1, 41)) + "\n")   # 40 lines
-    good = {"source": "gen.py:12-20", "why": "decal rides the final surface normals", "status": "proposed"}
-    ok = lambda sec: H.validate(sec, tmp)[0]
+    adir = os.path.join(tmp, "asset")
+    os.makedirs(adir)
+    gen = os.path.join(adir, "gen.py")
+    open(gen, "w").write(
+        "from recetas.paint_por_geometria import stamp\n"       # 1
+        "def build(g, m):\n"                                    # 2
+        "    n = stamp(g, m, (1, 0, 0), part='body')\n"         # 3
+        "    return n\n"                                        # 4
+        "X = 1\n")                                              # 5  (module level)
+    open(os.path.join(adir, "README.md"), "w").write("# readme\n")
+    outside = os.path.join(tmp, "outside.py")
+    open(outside, "w").write("def f():\n    return 1\n")
+    os.symlink(outside, os.path.join(adir, "link.py"))
+    good = {"source": "gen.py:2-4", "why": "paint zones stamped per part on the final mesh", "status": "proposed"}
+    OLD = "2026-01-01T00:00:00"
+    ok = lambda sec, created=OLD: H.validate(sec, adir, created, ["gen.py"])[0]
+    bake_t = H._module_first_commit("bake_procedural")
     try:
         check("harvest: missing section -> FAIL", not ok(None))
-        check("harvest: template written by start_asset (entries [], none '') -> FAIL (empty)", not ok(H.empty_section()))
+        check("harvest: template written by start_asset -> FAIL (empty)", not ok(H.empty_section()))
         check("harvest: {} -> FAIL", not ok({}))
         check("harvest: entries [] and no none -> FAIL", not ok({"entries": []}))
-        check("harvest: `none: true` without a reason -> FAIL", not ok({"none": True}))
-        check("harvest: none with a real reason -> PASS",
-              ok({"none": "built only from existing recipes (bvh_glue, paint_por_geometria); nothing new surfaced"}))
-        check("harvest control: none with a placeholder ('n/a') -> FAIL", not ok({"none": "n/a"}))
-        check("harvest control: none with a too-short reason -> FAIL", not ok({"none": "nothing new"}))
+        check("harvest: `none: true` -> FAIL", not ok({"none": True}))
+        # --- none: closed list
+        check("harvest: none = reused_only:<registered technique the generator calls with part=> -> PASS",
+              ok({"none": "reused_only:paint_por_geometria"}))
+        check("harvest: none = asset_specific:<file:line inside a def> -> PASS", ok({"none": "asset_specific:gen.py:3"}))
+        check("JUNK: none = 'aaaaaaaaaaaaaaaa' -> FAIL", not ok({"none": "aaaaaaaaaaaaaaaa"}))
+        check("JUNK: none = free text sentence -> FAIL", not ok({"none": "built only from existing recipes; nothing new surfaced"}))
+        check("JUNK: reused_only with an unregistered technique -> FAIL", not ok({"none": "reused_only:made_up_technique"}))
+        check("JUNK: reused_only with a registered technique the generator NEVER calls -> FAIL",
+              not ok({"none": "reused_only:bvh_glue"}))
+        check("JUNK: reused_only with an empty list -> FAIL", not ok({"none": "reused_only:"}))
+        check("JUNK: asset_specific pointing at module-level code (not a def/class) -> FAIL",
+              not ok({"none": "asset_specific:gen.py:5"}))
+        check("JUNK: asset_specific:README.md:1 -> FAIL (not code)", not ok({"none": "asset_specific:README.md:1"}))
+        check("JUNK: asset_specific:/etc/passwd:1 -> FAIL (outside the asset)", not ok({"none": "asset_specific:/etc/passwd:1"}))
+        # --- entries
         check("harvest: one valid entry (proposed) -> PASS", ok({"entries": [good]}))
-        check("harvest: promoted entry with a registered technique -> PASS",
+        check("harvest: promoted + registered + postdates the manifest -> PASS",
               ok({"entries": [dict(good, status="promoted", technique="surface_decal")]}))
-        check("harvest control: promoted but technique NOT in the registry -> FAIL",
+        check("JUNK: README.md:1 citation (inside the asset but not code) -> FAIL",
+              not ok({"entries": [dict(good, source="README.md:1")]}))
+        check("JUNK: the REPO's README.md:1 -> FAIL", not ok({"entries": [dict(good, source=os.path.join(REPO_ROOT, "README.md") + ":1")]}))
+        check("JUNK: /etc/passwd:1 citation -> FAIL", not ok({"entries": [dict(good, source="/etc/passwd:1")]}))
+        check("JUNK: ../outside.py:1 escape -> FAIL", not ok({"entries": [dict(good, source="../outside.py:2")]}))
+        check("JUNK: a symlink inside the asset pointing outside is resolved and rejected -> FAIL",
+              not ok({"entries": [dict(good, source="link.py:2")]}))
+        check("JUNK: module-level line (gen.py:5) is not inside a def/class -> FAIL",
+              not ok({"entries": [dict(good, source="gen.py:5")]}))
+        check("JUNK: a range that leaves the def (gen.py:2-5) -> FAIL", not ok({"entries": [dict(good, source="gen.py:2-5")]}))
+        check("JUNK: a recetas/ citation is allowed (motor code is inside the roots) -> PASS",
+              ok({"entries": [dict(good, source="recetas/bvh_glue.py:20-30")]}))
+        check("JUNK: promoted technique that ALREADY EXISTED (manifest created after bake_procedural was committed) -> FAIL",
+              not ok({"entries": [dict(good, status="promoted", technique="bake_procedural_to_float_color")]},
+                     created=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(bake_t + 1))))
+        check("control: the same entry passes when the manifest predates the recipe (created one second earlier)",
+              ok({"entries": [dict(good, status="promoted", technique="bake_procedural_to_float_color")]},
+                 created=time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(bake_t - 1))))
+        check("JUNK: promoted with a manifest that has no `created` -> FAIL (cannot date it)",
+              not ok({"entries": [dict(good, status="promoted", technique="surface_decal")]}, created=None))
+        check("JUNK: promoted but technique NOT in the registry -> FAIL",
               not ok({"entries": [dict(good, status="promoted", technique="made_up_technique")]}))
-        check("harvest control: promoted without a technique -> FAIL",
-              not ok({"entries": [dict(good, status="promoted")]}))
-        check("harvest control: entries AND none together -> FAIL",
-              not ok({"entries": [good], "none": "a perfectly long reason for nothing"}))
-        check("harvest control: source file that does not exist -> FAIL",
-              not ok({"entries": [dict(good, source="no_such_file.py:3")]}))
-        check("harvest control: line beyond the end of the file (41 of 40) -> FAIL",
-              not ok({"entries": [dict(good, source="gen.py:41")]}))
-        check("harvest control: source without a line -> FAIL", not ok({"entries": [dict(good, source="gen.py")]}))
-        check("harvest control: empty why -> FAIL", not ok({"entries": [dict(good, why="")]}))
-        check("harvest control: one-word why -> FAIL", not ok({"entries": [dict(good, why="useful")]}))
-        check("harvest control: status outside promoted/proposed -> FAIL",
-              not ok({"entries": [dict(good, status="maybe")]}))
-        check("harvest control: one bad entry among good ones -> FAIL",
-              not ok({"entries": [good, dict(good, source="gen.py:999")]}))
+        check("JUNK: promoted without a technique -> FAIL", not ok({"entries": [dict(good, status="promoted")]}))
+        check("harvest: entries AND none together -> FAIL",
+              not ok({"entries": [good], "none": "reused_only:paint_por_geometria"}))
+        check("JUNK: source file that does not exist -> FAIL", not ok({"entries": [dict(good, source="no_such.py:3")]}))
+        check("JUNK: line beyond the end of the file -> FAIL", not ok({"entries": [dict(good, source="gen.py:99")]}))
+        check("JUNK: source without a line -> FAIL", not ok({"entries": [dict(good, source="gen.py")]}))
+        check("JUNK: empty why -> FAIL", not ok({"entries": [dict(good, why="")]}))
+        check("JUNK: why = 'aaaaaaaaaaaaaaaa' (one token) -> FAIL", not ok({"entries": [dict(good, why="aaaaaaaaaaaaaaaa")]}))
+        check("JUNK: status outside promoted/proposed -> FAIL", not ok({"entries": [dict(good, status="maybe")]}))
+        check("JUNK: one bad entry among good ones -> FAIL",
+              not ok({"entries": [good, dict(good, source="gen.py:99")]}))
         check("harvest: a section that is not an object -> FAIL", not ok(["gen.py:3"]))
 
         # CLI + start_asset round trip
         env = dict(os.environ, MOTOR_GATE_STATE_DIR=tmp)
-        adir = os.path.join(tmp, "asset")
-        os.makedirs(adir)
-        open(os.path.join(adir, "gen.py"), "w").write("\n".join("l%d" % i for i in range(1, 30)) + "\n")
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
-                            "--technique", "body=paint_por_geometria", "--generator", "gen.py",
-                            "--output", "a.blend"], capture_output=True, text=True, env=env)
+        start = [sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
+                 "--technique", "body=paint_por_geometria", "--generator", "gen.py", "--output", "a.blend"]
+        r = subprocess.run(start, capture_output=True, text=True, env=env)
         man = os.path.join(adir, "_motor", "manifest.json")
         doc = json.load(open(man))
         check("start_asset: writes an EMPTY harvest template (so the gate fails until filled)",
               r.returncode == 0 and doc.get("harvest") == {"entries": [], "none": ""}, r.stderr[-300:])
         check("start_asset: the printed instructions mention the harvest step", "HARVEST" in r.stdout)
         hcli = [sys.executable, os.path.join(ROOT, "tools", "harvest_asset.py"), man]
-        r = subprocess.run(hcli + ["--add", "gen.py:30", "decal rides the final surface normals"], capture_output=True, text=True)
+        r = subprocess.run(hcli + ["--add", "gen.py:99", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
         check("harvest_asset: an out-of-range citation is REFUSED and the manifest is untouched",
               r.returncode == 1 and json.load(open(man))["harvest"] == {"entries": [], "none": ""})
-        r = subprocess.run(hcli + ["--add", "gen.py:10-14", "decal rides the final surface normals",
-                                   "--status", "promoted", "--technique", "surface_decal"], capture_output=True, text=True)
+        r = subprocess.run(hcli + ["--add", "gen.py:2-4", "paint zones stamped per part on the final mesh"], capture_output=True, text=True)
         check("harvest_asset: a valid entry is saved", r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1, r.stdout)
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
-                            "--technique", "body=paint_por_geometria", "--generator", "gen.py",
-                            "--output", "a.blend"], capture_output=True, text=True, env=env)
+        r = subprocess.run(start, capture_output=True, text=True, env=env)
         check("start_asset: re-running it does NOT wipe an already recorded harvest",
               r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1)
-        r = subprocess.run(hcli + ["--none", "x"], capture_output=True, text=True)
-        check("harvest_asset: a trivial --none reason is REFUSED", r.returncode == 1)
-        r = subprocess.run(hcli + ["--none", "reused only existing recipes; no new technique appeared"], capture_output=True, text=True)
+        r = subprocess.run(hcli + ["--none", "nothing new here at all"], capture_output=True, text=True)
+        check("harvest_asset: a free-text --none is REFUSED", r.returncode == 1)
+        r = subprocess.run(hcli + ["--none", "reused_only:paint_por_geometria"], capture_output=True, text=True)
         d2 = json.load(open(man))["harvest"]
-        check("harvest_asset: --none with a reason replaces the entries (never both)",
-              r.returncode == 0 and d2["entries"] == [] and d2["none"].startswith("reused"))
+        check("harvest_asset: --none with a closed category replaces the entries (never both)",
+              r.returncode == 0 and d2["entries"] == [] and d2["none"].startswith("reused_only"), r.stdout)
         check("harvest_asset --show: valid section exits 0",
               subprocess.run(hcli + ["--show"], capture_output=True, text=True).returncode == 0)
     finally:

@@ -12,7 +12,7 @@
 #      randomised per process, so the same decal came out different every run. Here the
 #      seed is crc32(name) (stable) unless you pass seed=. (4) the ray is parameterised
 #      (origin + direction, world space) instead of the original's hard-coded
-#      y=-0.05 / +Y front view. (5) the BVH is built from the target's mesh DATA (final
+#      y=-0.05 / +Y front view. (5) probe distances scale with the target bbox diagonal (rana ratios by default). (6) the BVH is built from the target's mesh DATA (final
 #      sculpted mesh, no modifiers); pass tree= to reuse one across many decals.
 # FUENTE: rana/rana_gen.py:392-442 (smooth_normal, decal), approved by Joan at v10
 #      ("Esta si que si, ya si es muy similar", engram #2950). Replaces paint_por_geometria
@@ -38,6 +38,11 @@ except ImportError:  # recipes are also used with recetas/ itself on sys.path
     from motor_stamp import stamp_object as _motor_stamp
 
 TECHNIQUE = "surface_decal"
+# Probe geometry is relative to the target's bbox diagonal. The defaults ARE the rana v10
+# values (0.004 m start offset, 0.008 m ray length, 0.0012 m hit tolerance) on its
+# 0.0436094 m body diagonal, so rana reproduces exactly while a 2 m prop gets 2 m-scale probes.
+RANA_DIAG = 0.0436094075832481
+OFFSET_RATIO, REACH_RATIO, TOL_RATIO = 0.004 / RANA_DIAG, 0.008 / RANA_DIAG, 0.0012 / RANA_DIAG
 
 
 def build_tree(obj):
@@ -64,7 +69,7 @@ def smooth_normal(obj, idx, co):
 
 def surface_decal(name, target, origin, direction, rx, rz, material, lift=0.00006,
                   wobble=0.0, seed=None, tree=None, collection=None, rings=14, segs=48,
-                  part=None):
+                  part=None, offset_ratio=OFFSET_RATIO, reach_ratio=REACH_RATIO, tol_ratio=TOL_RATIO):
     """Project an elliptical (rx, rz) decal onto `target` along `direction` from `origin`
     (both WORLD space). Returns (hit_point, face_normal) in target OBJECT space. The
     decal object takes the target's matrix_world, so it sits exactly on it."""
@@ -77,6 +82,8 @@ def surface_decal(name, target, origin, direction, rx, rz, material, lift=0.0000
         raise SystemExit("surface_decal %s missed the %s surface from %s along %s"
                          % (name, target.name, tuple(origin), tuple(direction)))
     rot = n.to_track_quat("Z", "Y").to_matrix()
+    diag = Vector(target.dimensions).length / max(sum(target.matrix_world.to_scale()) / 3.0, 1e-12)
+    off, reach, tol = diag * offset_ratio, diag * reach_ratio, diag * tol_ratio   # local space
     wr = random.Random((zlib.crc32(name.encode()) & 0xffff) if seed is None else seed)
     jit = [1 + wobble * wr.uniform(-1, 1) for _ in range(6)]
     bm = bmesh.new()
@@ -88,8 +95,8 @@ def surface_decal(name, target, origin, direction, rx, rz, material, lift=0.0000
                  + jit[(int(j * 6 / segs) + 1) % 6] * ((j * 6 / segs) % 1))
             local = Vector((rx * k * i / rings * math.cos(a), rz * k * i / rings * math.sin(a), 0))
             p = hit + rot @ local
-            h, hn, fi, dist = tree.ray_cast(p + n * 0.004, -n, 0.008)
-            if h is None or abs(dist - 0.004) > 0.0012:
+            h, hn, fi, dist = tree.ray_cast(p + n * off, -n, reach)
+            if h is None or abs(dist - off) > tol:
                 h, hn, fi, _ = tree.find_nearest(p)
             pts.append(h)
             nrm.append(smooth_normal(target, fi, h))

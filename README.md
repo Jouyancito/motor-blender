@@ -86,20 +86,24 @@ Every modeling job goes through four doors, each one enforced by code, not by me
    python3 tools/harvest_asset.py <asset>/_motor/manifest.json \
        --add rana/rana_gen.py:403-442 "decal rides the final surface with its smooth normals" \
        --status promoted --technique surface_decal
-   # (b) an explicit nothing, with a written reason
-   python3 tools/harvest_asset.py <asset>/_motor/manifest.json \
-       --none "built only from existing recipes; no new technique appeared"
+   # (b) an explicit nothing, from a CLOSED list (free text is refused)
+   python3 tools/harvest_asset.py <asset>/_motor/manifest.json --none "reused_only:bvh_glue,paint_por_geometria"
+   python3 tools/harvest_asset.py <asset>/_motor/manifest.json --none "asset_specific:gen.py:42"
    ```
 
-   The gate (`recetas/harvest.py`) refuses: no section, empty section, `none` without a
-   real reason (placeholders like "n/a" count as none), entries and `none` together, a
-   source that is not an existing `file:line` inside the file, a one-word `why`, a status
-   other than promoted/proposed, and a "promoted" technique missing from
-   `recetas/technique_registry.py`. It proves the question was answered with citations a
+   The gate (`recetas/harvest.py`) refuses: no section, empty section, a `none` outside the
+   closed list (`reused_only:<techniques>` where every one is registered AND called with
+   `part=` by a manifest generator; `asset_specific:<file:line>` of real code), entries and
+   `none` together, a source that does not resolve INSIDE the asset dir or `recetas/`
+   (no `..`, no foreign absolute paths, symlinks resolved), is not a `.py`, or whose lines
+   do not sit inside one def/class body, a one-line `why` under 3 words, a status other
+   than promoted/proposed, and a "promoted" technique that is not registered or whose
+   module was first committed BEFORE the manifest was created (it was not learned here).
+   A harvest problem never turns an unjudged blend (NOT_TESTED) into FAIL. It proves the question was answered with citations a
    reviewer can open; it cannot prove the answer is complete.
 
    Manifests written before this gate have no `harvest` section and will FAIL until one is
-   added (`harvest_asset.py --none` is enough when the asset really taught nothing).
+   added (`reused_only:` / `asset_specific:` when the asset really taught nothing new).
 
 ## Creation Protocol — reasoning ANTES de construir
 
