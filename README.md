@@ -66,6 +66,41 @@ un post en compositor (glare/bloom + viñeta + grado de color derivado de los
 antes de renderizar, activada por defecto — pasar `off` como 8vo argumento
 posicional del CLI (`... -- <biome> <out> <seed> ... <mood>`) para desactivarla.
 
+## Asset lifecycle and the harvest gate (2026-10-16)
+
+Every modeling job goes through four doors, each one enforced by code, not by memory
+(LECCIONES 1):
+
+1. `tools/start_asset.py` -- route the subject, declare a technique per part, write
+   `_motor/manifest.json`. Without it the PreToolUse hook refuses Blender runs.
+2. Build through the motor (`motor_run.py` + gates). Recipes stamp their output.
+3. `tools/verify_asset.py <file.blend> <manifest>` -- writes `verdict.json`; the Stop hook
+   blocks the turn until it is fresh and PASS.
+4. **Harvest** -- the verdict only passes if the manifest's `harvest` section says what
+   this asset taught the motor. `start_asset.py` writes the section EMPTY, and an empty or
+   missing section is a FAIL row (`harvest`) in the verdict. Fill it with
+   `tools/harvest_asset.py`, in one of two forms:
+
+   ```
+   # (a) techniques promoted or proposed for the motor, each a checkable file:line + a why
+   python3 tools/harvest_asset.py <asset>/_motor/manifest.json \
+       --add rana/rana_gen.py:403-442 "decal rides the final surface with its smooth normals" \
+       --status promoted --technique surface_decal
+   # (b) an explicit nothing, with a written reason
+   python3 tools/harvest_asset.py <asset>/_motor/manifest.json \
+       --none "built only from existing recipes; no new technique appeared"
+   ```
+
+   The gate (`recetas/harvest.py`) refuses: no section, empty section, `none` without a
+   real reason (placeholders like "n/a" count as none), entries and `none` together, a
+   source that is not an existing `file:line` inside the file, a one-word `why`, a status
+   other than promoted/proposed, and a "promoted" technique missing from
+   `recetas/technique_registry.py`. It proves the question was answered with citations a
+   reviewer can open; it cannot prove the answer is complete.
+
+   Manifests written before this gate have no `harvest` section and will FAIL until one is
+   added (`harvest_asset.py --none` is enough when the asset really taught nothing).
+
 ## Creation Protocol — reasoning ANTES de construir
 
 `CREATION_PROTOCOL.md` — gate previo a `RECETAS.md`/`preflight_destructivo`: identifica la

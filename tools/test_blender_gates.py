@@ -700,6 +700,46 @@ def main():
     check("pose_solver.orient_palm: the palm normal ends up facing the target (in-plane angle < 1 deg)",
           math.degrees(a_.angle(b_)) < 1.0 and u2.length > 0.99, math.degrees(a_.angle(b_)))
 
+    # ------------------------------------------------------------- cosecha-1: harvest in verify_asset
+    import json
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import verify_asset as VA
+
+    def verified(harvest_section, note):
+        fresh()
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        cube_ = bpy.context.active_object
+        cube_["motor_part"] = "body"
+        cube_["motor_technique"] = "bvh_glue"
+        d_ = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d_, "_motor"))
+        src_ = os.path.join(d_, "gen.py")
+        open(src_, "w").write("\n".join("l%d" % i for i in range(1, 31)) + "\n")
+        blend_ = os.path.join(d_, "a.blend")
+        bpy.ops.wm.save_as_mainfile(filepath=blend_)
+        doc_ = {"schema": 2, "subject": "gato", "generators": ["gen.py"], "outputs": [blend_],
+                "parts": {"body": {"technique": "bvh_glue"}}}
+        if harvest_section is not None:
+            doc_["harvest"] = harvest_section
+        man_ = os.path.join(d_, "_motor", "manifest.json")
+        json.dump(doc_, open(man_, "w"))
+        rep_ = VA.check(blend_, man_)
+        return rep_, {r["prop"]: r for r in rep_.rows}
+
+    good_entry = {"source": "gen.py:5-9", "why": "glue strip keeps its proud offset", "status": "proposed"}
+    rep, rows = verified({"entries": [good_entry]}, "one entry")
+    check("verify_asset harvest: stamped asset + ONE entry -> overall PASS", rep.verdict() == PASS and rows["harvest"]["state"] == PASS, rep.rows)
+    rep, rows = verified({"none": "built only from existing recipes; nothing new surfaced"}, "none")
+    check("verify_asset harvest: stamped asset + `none` with a reason -> overall PASS", rep.verdict() == PASS, rep.rows)
+    rep, rows = verified(None, "missing")
+    check("verify_asset harvest control: manifest with NO harvest section -> FAIL (everything else is clean)",
+          rep.verdict() == FAIL and rows["harvest"]["state"] == FAIL and rows["part:body:exists"]["state"] == PASS, rep.rows)
+    rep, rows = verified({"entries": [], "none": ""}, "empty")
+    check("verify_asset harvest control: EMPTY section -> FAIL", rep.verdict() == FAIL and rows["harvest"]["state"] == FAIL)
+    rep, rows = verified({"entries": [dict(good_entry, source="gen.py:99")]}, "bad cite")
+    check("verify_asset harvest control: an entry citing a line that does not exist -> FAIL", rows["harvest"]["state"] == FAIL)
+    check("verify_asset harvest: the FAIL row tells you the command that fixes it", "harvest_asset.py" in rows["harvest"]["detail"])
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):

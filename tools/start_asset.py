@@ -35,6 +35,7 @@ sys.path.insert(0, REPO)
 
 from recetas.preflight_router import route_all, require_technique  # noqa: E402
 from recetas.technique_registry import REGISTRY, is_registered  # noqa: E402
+from recetas import harvest as harvest_mod  # noqa: E402
 
 SCHEMA = 2
 MANIFEST_REL = os.path.join("_motor", "manifest.json")
@@ -207,6 +208,16 @@ def main(argv=None):
     out_dir = os.path.join(asset_dir, "_motor")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(asset_dir, MANIFEST_REL)
+    # HARVEST gate: the template starts EMPTY (which verify_asset.py fails) and a re-run of
+    # start_asset must not wipe what was already recorded.
+    manifest["harvest"] = harvest_mod.empty_section()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            prev = json.load(fh).get("harvest")
+        if isinstance(prev, dict) and (prev.get("entries") or prev.get("none")):
+            manifest["harvest"] = prev
+    except (OSError, ValueError, AttributeError):
+        pass
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
@@ -220,6 +231,10 @@ def main(argv=None):
     print("  AFTER building, run: python3 %s/tools/verify_asset.py <file.blend> %s"
           % (REPO, path))
     print("  (every recipe call needs part=<declared part> so its output is stamped)")
+    print("  HARVEST (required for a PASS): before the verdict, record what this asset taught the motor:")
+    print("    python3 %s/tools/harvest_asset.py %s --add <file:line> \"<why>\" [--status promoted --technique <id>]"
+          % (REPO, path))
+    print("    python3 %s/tools/harvest_asset.py %s --none \"<why nothing new>\"" % (REPO, path))
     print("  Blender runs for this asset are now unblocked. Build THROUGH the "
           "motor (motor_run.py + gates); the manifest only proves the declaration.")
     return 0

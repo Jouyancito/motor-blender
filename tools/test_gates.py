@@ -1925,6 +1925,83 @@ def test_bake_shading_pure():
           abs(bsc.pearson([1, 2, 3], [2, 4, 6]) - 1) < 1e-9 and bsc.pearson([1, 1, 1], [1, 2, 3]) is None)
 
 
+def test_harvest_gate():
+    print("\nharvest gate (recetas/harvest.py + start_asset + harvest_asset)")
+    from recetas import harvest as H
+    tmp = tempfile.mkdtemp()
+    src = os.path.join(tmp, "gen.py")
+    open(src, "w").write("\n".join("line %d" % i for i in range(1, 41)) + "\n")   # 40 lines
+    good = {"source": "gen.py:12-20", "why": "decal rides the final surface normals", "status": "proposed"}
+    ok = lambda sec: H.validate(sec, tmp)[0]
+    try:
+        check("harvest: missing section -> FAIL", not ok(None))
+        check("harvest: template written by start_asset (entries [], none '') -> FAIL (empty)", not ok(H.empty_section()))
+        check("harvest: {} -> FAIL", not ok({}))
+        check("harvest: entries [] and no none -> FAIL", not ok({"entries": []}))
+        check("harvest: `none: true` without a reason -> FAIL", not ok({"none": True}))
+        check("harvest: none with a real reason -> PASS",
+              ok({"none": "built only from existing recipes (bvh_glue, paint_por_geometria); nothing new surfaced"}))
+        check("harvest control: none with a placeholder ('n/a') -> FAIL", not ok({"none": "n/a"}))
+        check("harvest control: none with a too-short reason -> FAIL", not ok({"none": "nothing new"}))
+        check("harvest: one valid entry (proposed) -> PASS", ok({"entries": [good]}))
+        check("harvest: promoted entry with a registered technique -> PASS",
+              ok({"entries": [dict(good, status="promoted", technique="surface_decal")]}))
+        check("harvest control: promoted but technique NOT in the registry -> FAIL",
+              not ok({"entries": [dict(good, status="promoted", technique="made_up_technique")]}))
+        check("harvest control: promoted without a technique -> FAIL",
+              not ok({"entries": [dict(good, status="promoted")]}))
+        check("harvest control: entries AND none together -> FAIL",
+              not ok({"entries": [good], "none": "a perfectly long reason for nothing"}))
+        check("harvest control: source file that does not exist -> FAIL",
+              not ok({"entries": [dict(good, source="no_such_file.py:3")]}))
+        check("harvest control: line beyond the end of the file (41 of 40) -> FAIL",
+              not ok({"entries": [dict(good, source="gen.py:41")]}))
+        check("harvest control: source without a line -> FAIL", not ok({"entries": [dict(good, source="gen.py")]}))
+        check("harvest control: empty why -> FAIL", not ok({"entries": [dict(good, why="")]}))
+        check("harvest control: one-word why -> FAIL", not ok({"entries": [dict(good, why="useful")]}))
+        check("harvest control: status outside promoted/proposed -> FAIL",
+              not ok({"entries": [dict(good, status="maybe")]}))
+        check("harvest control: one bad entry among good ones -> FAIL",
+              not ok({"entries": [good, dict(good, source="gen.py:999")]}))
+        check("harvest: a section that is not an object -> FAIL", not ok(["gen.py:3"]))
+
+        # CLI + start_asset round trip
+        env = dict(os.environ, MOTOR_GATE_STATE_DIR=tmp)
+        adir = os.path.join(tmp, "asset")
+        os.makedirs(adir)
+        open(os.path.join(adir, "gen.py"), "w").write("\n".join("l%d" % i for i in range(1, 30)) + "\n")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
+                            "--technique", "body=paint_por_geometria", "--generator", "gen.py",
+                            "--output", "a.blend"], capture_output=True, text=True, env=env)
+        man = os.path.join(adir, "_motor", "manifest.json")
+        doc = json.load(open(man))
+        check("start_asset: writes an EMPTY harvest template (so the gate fails until filled)",
+              r.returncode == 0 and doc.get("harvest") == {"entries": [], "none": ""}, r.stderr[-300:])
+        check("start_asset: the printed instructions mention the harvest step", "HARVEST" in r.stdout)
+        hcli = [sys.executable, os.path.join(ROOT, "tools", "harvest_asset.py"), man]
+        r = subprocess.run(hcli + ["--add", "gen.py:30", "decal rides the final surface normals"], capture_output=True, text=True)
+        check("harvest_asset: an out-of-range citation is REFUSED and the manifest is untouched",
+              r.returncode == 1 and json.load(open(man))["harvest"] == {"entries": [], "none": ""})
+        r = subprocess.run(hcli + ["--add", "gen.py:10-14", "decal rides the final surface normals",
+                                   "--status", "promoted", "--technique", "surface_decal"], capture_output=True, text=True)
+        check("harvest_asset: a valid entry is saved", r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1, r.stdout)
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "start_asset.py"), adir, "gato",
+                            "--technique", "body=paint_por_geometria", "--generator", "gen.py",
+                            "--output", "a.blend"], capture_output=True, text=True, env=env)
+        check("start_asset: re-running it does NOT wipe an already recorded harvest",
+              r.returncode == 0 and len(json.load(open(man))["harvest"]["entries"]) == 1)
+        r = subprocess.run(hcli + ["--none", "x"], capture_output=True, text=True)
+        check("harvest_asset: a trivial --none reason is REFUSED", r.returncode == 1)
+        r = subprocess.run(hcli + ["--none", "reused only existing recipes; no new technique appeared"], capture_output=True, text=True)
+        d2 = json.load(open(man))["harvest"]
+        check("harvest_asset: --none with a reason replaces the entries (never both)",
+              r.returncode == 0 and d2["entries"] == [] and d2["none"].startswith("reused"))
+        check("harvest_asset --show: valid section exits 0",
+              subprocess.run(hcli + ["--show"], capture_output=True, text=True).returncode == 0)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
@@ -1944,6 +2021,7 @@ def main():
     test_registry_integrity()
     test_probe_with_control()
     test_bake_shading_pure()
+    test_harvest_gate()
     test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]

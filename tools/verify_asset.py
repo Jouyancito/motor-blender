@@ -11,6 +11,10 @@ writes <asset_dir>/_motor/verdict.json. Per declared part:
                         declared technique
     unstamped_renderables PASS when every renderable object in the scene (mesh, curve,
                         surface, meta, font, collection instance...) has a motor_part
+    harvest             PASS only when the manifest's `harvest` section lists the techniques
+                        promoted/proposed from this asset (file:line + why) or declares
+                        `none` with a reason; missing/empty -> FAIL (see recetas/harvest.py,
+                        edit with tools/harvest_asset.py)
 
 States come from recetas/verdict.py. FAIL = checked and wrong; NOT_TESTED =
 the check could not run (unreadable .blend / manifest). The Stop hook
@@ -35,6 +39,7 @@ sys.path.insert(0, REPO)
 BLENDER = os.environ.get("BLENDER_BIN", "/home/jouyan/.local/bin/blender")
 
 from recetas.verdict import Report, PASS, FAIL, NOT_TESTED  # noqa: E402
+from recetas import harvest  # noqa: E402
 
 
 def write_verdict(manifest_path, blend, report, extra=None):
@@ -112,6 +117,17 @@ def _check(report, blend, manifest_path):
     except Exception as e:  # noqa: BLE001
         report.add("manifest_readable", NOT_TESTED, "cannot read manifest: %s" % e)
         return report
+    # HARVEST gate (cosecha 2026-10-16): pure manifest check, so it runs even when the
+    # blend later cannot be judged. No `harvest` section / empty section -> FAIL.
+    ok, problems, summary = harvest.validate(
+        manifest.get("harvest"), os.path.dirname(os.path.dirname(os.path.abspath(manifest_path))))
+    if ok:
+        report.add("harvest", PASS, summary)
+    else:
+        report.add("harvest", FAIL, "; ".join(problems[:3]) + (
+            " [%d more]" % (len(problems) - 3) if len(problems) > 3 else "")
+            + " -- fill it with: python3 tools/harvest_asset.py %s --add <file:line> <why> | --none <reason>"
+            % manifest_path)
     declared = _declared_outputs(manifest, manifest_path)
     if declared is not None and os.path.realpath(blend) not in declared:
         report.add("blend_declared", FAIL,
