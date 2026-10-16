@@ -51,3 +51,5 @@ Fuente de cada una: `COSECHA_2026-10-16.md`. Tabla aparte, al final, para no mov
 | Receta | Que hace | Probada en |
 |---|---|---|
 | `bake_procedural.py` | Shader de nodos → FLOAT_COLOR (`bake_procedural_to_float_color`, rechaza malla rala y bake plano) + imagen numpy → Blender sRGB con read-back (`image_to_blender_srgb_verified`). Llena el hueco `material_procedural` | 5 mobs del juego blancos un mes (#2540), tortuga/halcon 8/10 (#2559); regresion vs `_bake_vcol.py`/`_carapace_texture.py` 2026-10-16 |
+| `probe_with_control.py` | Cada sonda emparejada con un control que DEBE disparar: lectura limpia + control mudo = `NOT_TESTED`, nunca PASS (`ProbeSet.row/probe/zero`). Enlaza LECCIONES 3/12/14 | `rem_v8_measure.py` re-juzgado: 14 checks reales, 8 PASS con control, 6 NOT_TESTED sin control (el original decia 21 PASS) |
+| `evaluated_mesh.py` | `morphed_coords` / `masks_muted` / `shapekey_drift`: medir la malla EVALUADA (shape keys) con indices 1:1 a la base; se NIEGA a devolver un resultado desalineado | Dungeon warrior (41 shape keys: la jaula base estaba a 10 cm), #2493; regresion vs `_char_common.py` dev 0 |

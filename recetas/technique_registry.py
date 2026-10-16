@@ -47,6 +47,8 @@ UNREGISTERED_RECIPES = {
     "pose_swing": "rotates a pose bone; no mesh object to stamp",
     "biome_stem/biome_mass/biome_facet/biome_vcol/biome_ao": "bmesh helpers; the object belongs to the caller",
     "material_swatch/mesh_quality/physics/gltf_check/rubric/views/use_size": "gates and probes, not construction techniques",
+    "probe_with_control": "measurement helper (a ProbeSet of Report rows), builds nothing -> nothing to stamp",
+    "evaluated_mesh": "read-only measurement of the evaluated mesh (morphed_coords/masks_muted), builds nothing",
 }
 
 # Router-established techniques (router_knowledge `established`) with NO

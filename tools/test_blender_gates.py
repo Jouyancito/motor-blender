@@ -425,6 +425,61 @@ def main():
           abs(float(bp.srgb_encode(np.array(0.2140))) - 0.5) < 0.002
           and float(bp.srgb_encode(np.array(0.0))) == 0.0 and abs(float(bp.srgb_encode(np.array(1.0))) - 1.0) < 1e-6)
 
+    from recetas import evaluated_mesh as em
+
+    def shapekeyed(masked=False):
+        fresh()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=24, ring_count=16)
+        ob = bpy.context.active_object
+        ob.location = (0.3, -0.2, 1.0)
+        ob.shape_key_add(name="Basis")
+        rs = np.random.RandomState(1)
+        for k in range(3):
+            sk = ob.shape_key_add(name="k%d" % k, from_mix=False)
+            sk.value = 0.5
+            for d in sk.data:
+                d.co.x += 0.1 * rs.rand()
+                d.co.z += 0.05 * rs.rand()
+        if masked:
+            vg = ob.vertex_groups.new(name="g")
+            vg.add(list(range(0, 200)), 1.0, "REPLACE")
+            ob.modifiers.new("mask", "MASK").vertex_group = "g"
+        bpy.context.view_layer.update()
+        return ob
+
+    ob = shapekeyed(masked=True)
+    W, N = em.morphed_coords(ob)
+    base = np.empty(len(ob.data.vertices) * 3, np.float32)
+    ob.data.vertices.foreach_get("co", base)
+    Wb = base.reshape(-1, 3) + np.array(ob.matrix_world)[:3, 3]
+    check("morphed_coords: 1:1 with base indices even with a MASK on (362 verts), modifier restored",
+          len(W) == len(ob.data.vertices) and ob.modifiers["mask"].show_viewport)
+    check("morphed_coords control: the base cage is >5 cm off the morphed mesh (the bug it prevents)",
+          np.linalg.norm(Wb - W, axis=1).mean() > 0.05)
+    check("shapekey_drift: morphed mesh drifts, a plain cube does not",
+          em.shapekey_drift(ob) > 0.05 and (bpy.ops.mesh.primitive_cube_add() or True)
+          and em.shapekey_drift(bpy.context.active_object) < 1e-9)
+    ob = shapekeyed(masked=True)
+    real = em.masks_muted
+
+    class _noop:
+        def __init__(self, *a):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    em.masks_muted = _noop
+    try:
+        em.morphed_coords(ob)
+        refused = False
+    except RuntimeError as e:
+        refused = "mask not muted" in str(e)
+    em.masks_muted = real
+    check("morphed_coords control: with the mask NOT muted it REFUSES instead of returning shifted indices", refused)
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):

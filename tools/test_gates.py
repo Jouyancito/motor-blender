@@ -1836,6 +1836,60 @@ def test_registry_integrity():
           and TR.is_registered("bake_procedural_to_float_color"))
 
 
+def test_probe_with_control():
+    print("\nprobe_with_control (a clean reading needs a control that fired)")
+    from recetas import probe_with_control as pwc
+    from recetas.verdict import PASS as P, FAIL as F, NOT_TESTED as NT
+    st = lambda ps: ps.report.rows[-1]["state"]
+    ps = pwc.ProbeSet("t")
+    ps.zero("clean+fired", 0, 7)
+    check("clean subject + control fired -> PASS", st(ps) == P)
+    ps.zero("clean+blind", 0, 0)
+    check("clean subject + control that did NOT fire -> NOT_TESTED, never PASS", st(ps) == NT)
+    check("the blind row says why", "instrument blind" in ps.report.rows[-1]["detail"])
+    ps.zero("defect", 3, 9)
+    check("defective subject -> FAIL", st(ps) == F)
+    ps.zero("defect+blind", 3, 0)
+    check("defective subject is FAIL even when the control slipped (a defect is a defect)", st(ps) == F)
+    ps.row("no_control", True, "42 mm")
+    check("clean subject with NO control supplied -> NOT_TESTED", st(ps) == NT)
+    ps.row("no_control_bad", False, "42 mm")
+    check("defective subject with no control -> FAIL", st(ps) == F)
+    check("aggregate verdict of a mixed set is FAIL; a set with only PASS+NOT_TESTED is NOT_TESTED",
+          ps.report.verdict() == F)
+    ps2 = pwc.ProbeSet("t2")
+    ps2.zero("a", 0, 5)
+    ps2.zero("b", 0, 0)
+    check("one blind probe keeps the whole set from passing (verdict NOT_TESTED)",
+          ps2.report.verdict() == NT)
+    # callable API: the SAME instrument on subject and control
+    def count_inside(pts):
+        return sum(1 for x in pts if x < 0)
+    ps3 = pwc.ProbeSet("t3")
+    ps3.probe("clear", count_inside, lambda n: n == 0, [1, 2, 3], [-1, 2, -3])
+    check("probe(): clean subject, shrunken control hits 2 -> PASS", st(ps3) == P)
+    ps3.probe("blind", count_inside, lambda n: n == 0, [1, 2, 3], [1, 2, 3])
+    check("probe(): control identical to subject (cannot see the defect) -> NOT_TESTED", st(ps3) == NT)
+    ps3.probe("dirty", count_inside, lambda n: n == 0, [-1, 2], [-1, -2])
+    check("probe(): defective subject -> FAIL", st(ps3) == F)
+    ps3.probe("crash", lambda x: 1 / 0, lambda n: True, [1], [1])
+    check("probe(): a measure() that raises is NOT_TESTED, not a clean pass", st(ps3) == NT)
+    tmp = tempfile.mkdtemp()
+    try:
+        j = json.load(open(ps3.to_json(os.path.join(tmp, "p.json"))))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    check("to_json keeps control_fired per row",
+          [r["control_fired"] for r in j["rows"]][:2] == [True, False] and j["verdict"] == F)
+    # truth table vs the original rem_v8_measure.row(): same ok flag, PASS only with a fired control
+    for ok in (True, False):
+        for fired in (True, False, None):
+            q = pwc.ProbeSet("tt")
+            q.row("x", ok, "", control_fired=fired)
+            want = F if not ok else (P if fired else NT)
+            check("truth table ok=%s control_fired=%s -> %s" % (ok, fired, want), st(q) == want)
+
+
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
@@ -1853,6 +1907,7 @@ def main():
     test_motor_run()
     test_rubric()
     test_registry_integrity()
+    test_probe_with_control()
     test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]
