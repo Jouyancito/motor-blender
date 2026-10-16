@@ -43,3 +43,11 @@ subieron el éxito de otro agente 0/3→2/3) + outer loop de SceneCraft. Tier A.
 - Ficha/valores desde el doc sin samplear la malla (los 1183 sellos).
 - `get_viewport_screenshot` como evidencia de veredicto (captura cruda de pantalla: negro con Local View/sin foco; jamás mide nada) — glance/step siempre.
 - Solidify Simple sobre lámina con bordes abiertos/normales irregulares (explosión en cuchillas, Blender #110057) — correr `preflight_destructivo` primero; si hay open edges: modo COMPLEX, Clamp, o join+voxel_remesh.
+
+## Cosecha 2026-10-16 (recetas extraidas de los proyectos de assets)
+
+Fuente de cada una: `COSECHA_2026-10-16.md`. Tabla aparte, al final, para no mover las lineas que `router_knowledge.py` cita.
+
+| Receta | Que hace | Probada en |
+|---|---|---|
+| `bake_procedural.py` | Shader de nodos → FLOAT_COLOR (`bake_procedural_to_float_color`, rechaza malla rala y bake plano) + imagen numpy → Blender sRGB con read-back (`image_to_blender_srgb_verified`). Llena el hueco `material_procedural` | 5 mobs del juego blancos un mes (#2540), tortuga/halcon 8/10 (#2559); regresion vs `_bake_vcol.py`/`_carapace_texture.py` 2026-10-16 |

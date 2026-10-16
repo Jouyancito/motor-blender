@@ -332,6 +332,99 @@ def main():
     check("un solo objeto: nada que atravesar (NOT_APPLICABLE con razon)",
           st["interpenetration"] == NA)
 
+    # ------------------------------------------------------------------ cosecha-1
+    import numpy as np
+    from recetas import bake_procedural as bp
+
+    def noisy_sphere(segments=40, rings=24, flat=False):
+        fresh()
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=segments, ring_count=rings)
+        ob = bpy.context.active_object
+        mat = bpy.data.materials.new("m")
+        mat.use_nodes = True
+        nt = mat.node_tree
+        bsdf = nt.nodes["Principled BSDF"]
+        if flat:
+            bsdf.inputs["Base Color"].default_value = (0.3, 0.5, 0.2, 1)
+        else:
+            tc, no = nt.nodes.new("ShaderNodeTexCoord"), nt.nodes.new("ShaderNodeTexNoise")
+            cr = nt.nodes.new("ShaderNodeValToRGB")
+            cr.color_ramp.elements[0].color = (0.05, 0.2, 0.02, 1)
+            cr.color_ramp.elements[1].color = (0.8, 0.7, 0.1, 1)
+            nt.links.new(tc.outputs["Object"], no.inputs["Vector"])
+            nt.links.new(no.outputs["Fac"], cr.inputs["Fac"])
+            nt.links.new(cr.outputs["Color"], bsdf.inputs["Base Color"])
+        ob.data.materials.append(mat)
+        return ob, mat
+
+    ob, mat = noisy_sphere()
+    r = bp.bake_procedural_to_float_color(ob, part="body", samples=2)
+    ca = ob.data.color_attributes["Col"]
+    srcs = [l.from_node.bl_idname for l in mat.node_tree.links
+            if l.to_node.bl_idname == "ShaderNodeBsdfPrincipled" and l.to_socket.name == "Base Color"]
+    check("bake_procedural: textured sphere -> FLOAT_COLOR, luma spread > 0.02, Base Color reads the attribute",
+          r is not None and (r[1] - r[0]) > 0.02 and ca.data_type == "FLOAT_COLOR"
+          and srcs == ["ShaderNodeAttribute"], (r, ca.data_type, srcs))
+    check("bake_procedural: object stamped with part + technique",
+          ob.get("motor_part") == "body"
+          and "bake_procedural_to_float_color" in ob.get("motor_technique", ""))
+    ob, mat = noisy_sphere(flat=True)
+    try:
+        bp.bake_procedural_to_float_color(ob, part="body", samples=2)
+        flat_raised = False
+    except SystemExit as e:
+        flat_raised = "FLAT" in str(e)
+    check("bake_procedural control: a single-colour material (flat bake) raises instead of passing",
+          flat_raised)
+    ob, mat = noisy_sphere(flat=True)
+    r = bp.bake_procedural_to_float_color(ob, part="body", samples=2, min_spread=None)
+    check("bake_procedural: min_spread=None accepts a genuinely uniform material",
+          r is not None and (r[1] - r[0]) <= 0.02)
+    fresh()
+    bpy.ops.mesh.primitive_cube_add(size=1.0)
+    cub = bpy.context.active_object
+    cm = bpy.data.materials.new("c")
+    cm.use_nodes = True
+    cm.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (1, 1, 1, 1)
+    cub.data.materials.append(cm)
+    r = bp.bake_procedural_to_float_color(cub, part="body", samples=2)
+    after = tuple(cm.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value)[:3]
+    check("bake_procedural control: 8-vertex mesh is NOT baked (None) and its white material becomes a deliberate tone",
+          r is None and "Col" not in cub.data.color_attributes and all(abs(c - 1.0) > 0.1 for c in after),
+          (r, after))
+    ob, mat = noisy_sphere()
+    img = bpy.data.images.new("t", 4, 4)
+    tex = mat.node_tree.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    for l in list(bsdf.inputs["Base Color"].links):
+        mat.node_tree.links.remove(l)
+    mat.node_tree.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
+    kept = bp._rewire_base_colour(ob, "Col")
+    check("bake_procedural: an IMAGE texture feeding Base Color is left alone (survives glTF)",
+          kept == [mat.name]
+          and [l.from_node.bl_idname for l in bsdf.inputs["Base Color"].links] == ["ShaderNodeTexImage"])
+
+    fresh()
+    arr = np.random.RandomState(3).rand(8, 8, 4).astype(np.float32)
+    arr[..., 3] = 1
+    im = bp.image_to_blender_srgb_verified(arr, "t1")
+    px = np.empty(len(im.pixels), np.float32)
+    im.pixels.foreach_get(px)
+    want = np.ascontiguousarray(np.concatenate(
+        [bp.srgb_encode(arr[..., :3]), arr[..., 3:4]], axis=2)[::-1], dtype=np.float32).ravel()
+    check("image_to_blender_srgb_verified: buffer reads back == encoded source, tagged sRGB, packed",
+          im.colorspace_settings.name == "sRGB" and np.abs(px - want).max() < 1e-6 and im.packed_file is not None)
+    arr2 = arr.copy()
+    arr2[0, 0, :3] = 1.0 - arr2[0, 0, :3]
+    px2 = np.empty(len(px), np.float32)
+    bp.image_to_blender_srgb_verified(arr2, "t2").pixels.foreach_get(px2)
+    check("image_to_blender_srgb_verified control: one perturbed texel IS visible in the read-back",
+          np.abs(px - px2).max() > 0.05)
+    check("srgb_encode: linear 0.214 -> ~0.5 (IEC 61966-2-1), 0 -> 0, 1 -> 1",
+          abs(float(bp.srgb_encode(np.array(0.2140))) - 0.5) < 0.002
+          and float(bp.srgb_encode(np.array(0.0))) == 0.0 and abs(float(bp.srgb_encode(np.array(1.0))) - 1.0) < 1e-6)
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):

@@ -1814,6 +1814,28 @@ def test_router_requirements():
           req["structure"] and len(req["structure"][0][1]) == 7)
 
 
+def test_registry_integrity():
+    """Every registered technique points at a real recipe that defines its calls
+    and stamps its output (cosecha-1: new recipes must not register ghosts)."""
+    print("\ntechnique_registry integrity")
+    import ast as _ast
+    from recetas import technique_registry as TR
+    for tid, spec in sorted(TR.REGISTRY.items()):
+        path = os.path.join(ROOT, "recetas", spec["module"] + ".py")
+        ok = os.path.isfile(path)
+        src = open(path, encoding="utf-8").read() if ok else ""
+        defs = {n.name for n in _ast.walk(_ast.parse(src)) if isinstance(n, _ast.FunctionDef)} if ok else set()
+        check("registry %s: recetas/%s.py exists and defines %s"
+              % (tid, spec["module"], "/".join(spec["calls"])),
+              ok and all(c in defs for c in spec["calls"]), sorted(defs)[:8])
+        check("registry %s: the recipe stamps its output (motor_stamp)" % tid,
+              "_motor_stamp(" in src or "stamp_object(" in src)
+    check("control: an unknown technique is not registered", not TR.is_registered("no_such_technique_xyz"))
+    check("material_procedural gap closed: no longer listed as missing",
+          "material_procedural" not in TR.ROUTER_TECHNIQUES_WITHOUT_IMPLEMENTATION
+          and TR.is_registered("bake_procedural_to_float_color"))
+
+
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
@@ -1830,6 +1852,7 @@ def main():
     test_size_sources_strength()
     test_motor_run()
     test_rubric()
+    test_registry_integrity()
     test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]

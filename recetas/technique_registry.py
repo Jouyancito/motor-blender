@@ -31,6 +31,9 @@ REGISTRY = {
     "paint_por_geometria": {
         "module": "paint_por_geometria", "calls": ("stamp",),
         "note": "vertex-colour zones by 3D criteria (paint_por_geometria.py)"},
+    "bake_procedural_to_float_color": {
+        "module": "bake_procedural", "calls": ("bake_procedural_to_float_color",),
+        "note": "shader graph -> FLOAT_COLOR before glTF export (bake_procedural.py)"},
 }
 
 # Recipes that exist in recetas/ but are NOT registered, with the reason.
@@ -51,7 +54,8 @@ UNREGISTERED_RECIPES = {
 ROUTER_TECHNIQUES_WITHOUT_IMPLEMENTATION = {
     "pelo": "cards con alpha construidos desde los mechones",
     "quelonio": "carapacho desde sus escudos (_carapace.py is not in recetas/)",
-    "material_procedural": "FLOAT_COLOR horneado (only guarded by motor-bytecolor-guard.py)",
+    # material_procedural: IMPLEMENTED 2026-10-16 as `bake_procedural_to_float_color`
+    # (+ image_to_blender_srgb_verified for sub-mesh detail) -- see REGISTRY.
     "export_godot": "truth render del GLB exportado (build_mob.py lives in the game repo)",
     "mamifero": "gramatica de cuadrupedo compartida (recetas/gato/build_gato.py is a generator, not a technique)",
     "prop": "silueta reconocible + componentes funcionales",
