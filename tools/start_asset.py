@@ -2,7 +2,7 @@
 """start_asset.py -- the front door of every Blender modeling job.
 
     python3 tools/start_asset.py <asset_dir> "<subject description>" \
-        --generator <gen.py> [--technique part=tech ...] [--custom part=reason] [--allow-unknown "<reason>"]
+        --generator <gen.py>[:part1,part2] --output <file.blend> [--helper <script.py>] [--technique part=tech ...] [--custom part=reason] [--allow-unknown "<reason>"]
 
 What it does:
   1. Runs preflight_router.route_all() on the subject and PRINTS the rules:
@@ -37,7 +37,6 @@ from recetas.preflight_router import route_all, require_technique  # noqa: E402
 from recetas.technique_registry import REGISTRY, is_registered  # noqa: E402
 
 SCHEMA = 2
-ASSET_LIST = "motor-assets.list"
 MANIFEST_REL = os.path.join("_motor", "manifest.json")
 
 
@@ -79,10 +78,19 @@ def main(argv=None):
     ap.add_argument("subject", help="what is being built, e.g. 'gato', 'pelo largo'")
     ap.add_argument("--technique", action="append", default=[], metavar="PART=TECH",
                     help="technique chosen for one part; repeat per part")
-    ap.add_argument("--generator", action="append", default=[], metavar="GEN.PY",
-                    help="the generator script(s) that build this asset (path, "
-                         "absolute or relative to asset_dir); the gate proves they "
-                         "import+call the motor implementation of every technique")
+    ap.add_argument("--generator", action="append", default=[], metavar="GEN.PY[:PARTS]",
+                    help="a script that BUILDS the asset (path, absolute or relative to "
+                         "asset_dir). Optional ':part1,part2' binds it to those parts; the "
+                         "gate then proves it imports+calls (with part=) the motor "
+                         "implementation of just those parts' techniques. Without it, "
+                         "every non-custom part is checked against it.")
+    ap.add_argument("--helper", action="append", default=[], metavar="SCRIPT.PY",
+                    help="a script that only inspects/renders/measures (never builds). "
+                         "Any script in the asset dir that is neither generator nor helper "
+                         "is denied by the gate.")
+    ap.add_argument("--output", action="append", default=[], metavar="FILE.BLEND",
+                    help="the .blend the build produces; verify_asset.py and the Stop gate "
+                         "judge exactly these, not whatever .blend is newest")
     ap.add_argument("--custom", action="append", default=[], metavar="PART=REASON",
                     help="part whose technique is NOT in the registry: why it is "
                          "built by hand. The post-run verifier must still pass.")
@@ -104,8 +112,25 @@ def main(argv=None):
     if not args.generator:
         raise SystemExit("declare the generator: --generator <gen.py>. The gate "
                          "reads it to prove each technique is really called.")
-    generators = [g if os.path.isabs(g) else os.path.join(asset_dir, g)
-                  for g in args.generator]
+    if not args.output:
+        raise SystemExit("declare the output: --output <file.blend> (the file verify_asset.py judges)")
+
+    def absp(p):
+        return os.path.normpath(p if os.path.isabs(p) else os.path.join(asset_dir, p))
+
+    generators, generator_parts = [], {}
+    for g in args.generator:
+        path, _, plist = g.partition(":")
+        generators.append(absp(path))
+        if plist.strip():
+            generator_parts[absp(path)] = [x.strip() for x in plist.split(",") if x.strip()]
+    for g, plist in generator_parts.items():
+        for pt in plist:
+            if pt not in parts:
+                raise SystemExit("--generator %s binds unknown part %r (declared: %s)"
+                                 % (g, pt, ", ".join(parts)))
+    helpers = [absp(h) for h in args.helper]
+    outputs = [absp(o) for o in args.output]
     customs = {}
     for item in args.custom:
         if "=" not in item or not item.split("=", 1)[1].strip():
@@ -174,6 +199,9 @@ def main(argv=None):
              "must_read": r.data.get("must_read", [])}
             for r in matches],
         "generators": generators,
+        "generator_parts": generator_parts,
+        "helpers": helpers,
+        "outputs": outputs,
         "parts": checked,
     }
     out_dir = os.path.join(asset_dir, "_motor")
@@ -183,15 +211,10 @@ def main(argv=None):
         json.dump(manifest, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     # Register the asset dir so the Stop gate (motor-verify-gate.py) knows it.
-    lst = os.path.join(os.environ.get("MOTOR_GATE_LOG_DIR")
-                       or os.path.expanduser("~/.claude/hooks"), ASSET_LIST)
     try:
-        os.makedirs(os.path.dirname(lst), exist_ok=True)
-        known = open(lst).read().split("\n") if os.path.isfile(lst) else []
-        if asset_dir not in known:
-            with open(lst, "a", encoding="utf-8") as fh:
-                fh.write(asset_dir + "\n")
-    except OSError as e:
+        from recetas import motor_assets
+        motor_assets.register(asset_dir, os.environ.get("CLAUDE_SESSION_ID") or None)
+    except Exception as e:  # noqa: BLE001
         print("  WARNING: could not register asset dir for the Stop gate: %s" % e)
     print("\n  MANIFEST written: %s" % path)
     print("  AFTER building, run: python3 %s/tools/verify_asset.py <file.blend> %s"

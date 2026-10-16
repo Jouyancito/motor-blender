@@ -9,8 +9,8 @@ writes <asset_dir>/_motor/verdict.json. Per declared part:
     part:<p>:exists     PASS when >=1 object carries motor_part == <p>
     part:<p>:technique  PASS when those objects' motor_technique contains the
                         declared technique
-    unstamped_meshes    PASS when every visible mesh has a motor_part
-                        (an unstamped visible mesh was built outside the motor)
+    unstamped_renderables PASS when every renderable object in the scene (mesh, curve,
+                        surface, meta, font, collection instance...) has a motor_part
 
 States come from recetas/verdict.py. FAIL = checked and wrong; NOT_TESTED =
 the check could not run (unreadable .blend / manifest). The Stop hook
@@ -55,8 +55,55 @@ def write_verdict(manifest_path, blend, report, extra=None):
     return path
 
 
+# Object types that can render (or instance renderables). A stamped EMPTY does
+# not make a part: it has no geometry. ARMATURE counts as a part (rigs are parts)
+# but is never "unstamped geometry" because it does not render.
+RENDERABLE = {"MESH", "CURVE", "SURFACE", "META", "FONT", "CURVES", "POINTCLOUD",
+              "VOLUME", "GREASEPENCIL", "GPENCIL"}
+PART_TYPES = RENDERABLE | {"ARMATURE"}
+
+
+def _renders(ob):
+    """True when `ob` can put pixels in a render: renderable type, or an empty
+    instancing a collection."""
+    if ob.type in RENDERABLE:
+        return True
+    return ob.type == "EMPTY" and ob.instance_type == "COLLECTION" and ob.instance_collection is not None
+
+
+def _in_play(ob, view_layer_objs, scene_objs):
+    """Judge only objects that are really in the scene: in the active view layer
+    (an excluded collection is out), linked to a scene (an orphan from
+    bpy.data.objects.new is out), and visible in the viewport or renderable."""
+    if ob.name not in view_layer_objs or not ob.users_scene:
+        return False
+    try:
+        visible = ob.visible_get()
+    except Exception:  # noqa: BLE001 -- no view layer context
+        visible = not ob.hide_get()
+    return visible or not ob.hide_render
+
+
+def _declared_outputs(manifest, manifest_path):
+    asset_dir = os.path.dirname(os.path.dirname(os.path.abspath(manifest_path)))
+    outs = manifest.get("outputs")
+    if not outs:
+        return None   # legacy manifest: any .blend is accepted
+    return {os.path.realpath(o if os.path.isabs(o) else os.path.join(asset_dir, o)) for o in outs}
+
+
 def check(blend, manifest_path):
     report = Report("VERIFY %s" % os.path.basename(blend))
+    try:
+        return _check(report, blend, manifest_path)
+    except Exception:  # noqa: BLE001 -- a crash must never read as a pass or vanish
+        import traceback
+        report.add("verifier_crashed", NOT_TESTED,
+                   "verify_asset crashed: " + traceback.format_exc().strip().splitlines()[-1])
+        return report
+
+
+def _check(report, blend, manifest_path):
     try:
         with open(manifest_path, encoding="utf-8") as fh:
             manifest = json.load(fh)
@@ -64,6 +111,13 @@ def check(blend, manifest_path):
         assert isinstance(parts, dict) and parts
     except Exception as e:  # noqa: BLE001
         report.add("manifest_readable", NOT_TESTED, "cannot read manifest: %s" % e)
+        return report
+    declared = _declared_outputs(manifest, manifest_path)
+    if declared is not None and os.path.realpath(blend) not in declared:
+        report.add("blend_declared", FAIL,
+                   "%s is not one of the manifest's declared outputs (%s): re-run start_asset.py "
+                   "with --output, or verify the declared file"
+                   % (blend, ", ".join(sorted(declared))))
         return report
     if not os.path.isfile(blend):
         report.add("blend_exists", NOT_TESTED, "no such file: %s" % blend)
@@ -76,20 +130,28 @@ def check(blend, manifest_path):
         return report
 
     from recetas.motor_stamp import PART_PROP, TECH_PROP
-    by_part, unstamped = {}, []
+    view_layer_objs = {o.name for o in bpy.context.view_layer.objects}
+    scene_objs = None
+    by_part, unstamped, ignored = {}, [], 0
     for ob in bpy.data.objects:
+        if not _in_play(ob, view_layer_objs, scene_objs):
+            ignored += 1
+            continue
         part = ob.get(PART_PROP)
         if part:
             by_part.setdefault(str(part), []).append(ob)
-        elif ob.type == "MESH" and not ob.hide_render and not ob.hide_get():
-            unstamped.append(ob.name)
+        elif _renders(ob):
+            unstamped.append("%s(%s)" % (ob.name, ob.type))
 
     for part, spec in parts.items():
-        objs = by_part.get(part, [])
+        objs = [o for o in by_part.get(part, []) if o.type in PART_TYPES]
+        empties = [o.name for o in by_part.get(part, []) if o.type not in PART_TYPES]
         if not objs:
-            report.add("part:%s:exists" % part, FAIL,
-                       "no object carries motor_part=%r (built outside the motor, "
-                       "or the recipe was not passed part=%r)" % (part, part))
+            why = ("only non-geometry objects carry motor_part=%r (%s): an Empty is not a part"
+                   % (part, ", ".join(empties[:3]))) if empties else (
+                   "no object carries motor_part=%r (built outside the motor, or the recipe "
+                   "was not passed part=%r)" % (part, part))
+            report.add("part:%s:exists" % part, FAIL, why)
             report.add("part:%s:technique" % part, FAIL, "no stamped object to read")
             continue
         report.add("part:%s:exists" % part, PASS, "%d object(s)" % len(objs))
@@ -104,11 +166,12 @@ def check(blend, manifest_path):
             report.add("part:%s:technique" % part, PASS, want)
 
     if unstamped:
-        report.add("unstamped_meshes", FAIL,
-                   "%d visible mesh(es) without motor_part (built outside the motor): %s"
+        report.add("unstamped_renderables", FAIL,
+                   "%d renderable object(s) without motor_part (built outside the motor): %s"
                    % (len(unstamped), ", ".join(sorted(unstamped)[:8])))
     else:
-        report.add("unstamped_meshes", PASS, "every visible mesh is stamped")
+        report.add("unstamped_renderables", PASS,
+                   "every renderable in the scene is stamped (%d out-of-scene/orphan object(s) ignored)" % ignored)
     return report
 
 
@@ -138,7 +201,11 @@ def main(argv):
         return p.returncode
 
     report = check(blend, manifest)
-    path = write_verdict(manifest, blend, report)
+    try:
+        path = write_verdict(manifest, blend, report)
+    except Exception as e:  # noqa: BLE001
+        print("  verdict NOT written: %s" % e)
+        return 2
     print(report.render())
     print("  verdict written: %s" % path)
     return 0 if report.verdict() == PASS else 1

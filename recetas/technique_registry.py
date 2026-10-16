@@ -110,8 +110,8 @@ def _bindings(tree):
 
 
 def _calls_of(tree, bindings):
-    """Fully-qualified dotted names of everything called, resolved via imports."""
-    out = set()
+    """(fully-qualified dotted name, Call node) for every call, resolved via imports."""
+    out = []
     for n in ast.walk(tree):
         if isinstance(n, ast.Call):
             d = _dotted(n.func)
@@ -120,7 +120,7 @@ def _calls_of(tree, bindings):
             head, _, tail = d.partition(".")
             if head in bindings:
                 d = bindings[head] + ("." + tail if tail else "")
-            out.add(_norm_mod(d))
+            out.append((_norm_mod(d), n))
     return out
 
 
@@ -129,9 +129,21 @@ def _parse(path):
         return ast.parse(fh.read(), filename=path)
 
 
+def _shadowed(directory, module):
+    """A local recetas/ package or <module>.py next to the caller would be
+    imported INSTEAD of the motor's recipe (a shadow copy proves nothing)."""
+    for cand in (os.path.join(directory, "recetas"),
+                 os.path.join(directory, module + ".py")):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def evidence(generator_path, technique):
     """(ok, detail): does `generator_path` -- following its local imports ONE
-    level -- import AND call the motor implementation of `technique`?"""
+    level -- import AND call the motor implementation of `technique`, passing a
+    `part=` keyword (so the output gets stamped), without a local shadow copy
+    of the recipe?"""
     spec = REGISTRY.get(_key(technique))
     if spec is None:
         return False, "technique %r is not in the registry" % technique
@@ -153,11 +165,24 @@ def evidence(generator_path, technique):
                 seen.append(cand)
             except (OSError, SyntaxError, ValueError):
                 pass
+    nopart = None
     for path, t in trees:
         b, _m = _bindings(t)
-        hit = _calls_of(t, b) & wanted
-        if hit:
-            return True, "%s calls %s" % (os.path.basename(path), sorted(hit)[0])
+        for name, call in _calls_of(t, b):
+            if name not in wanted:
+                continue
+            if not any(k.arg == "part" for k in call.keywords):
+                nopart = (path, name)
+                continue
+            shadow = _shadowed(os.path.dirname(os.path.abspath(path)), spec["module"])
+            if shadow:
+                return False, ("%s calls %s but %s shadows the motor's recetas/%s.py"
+                               % (os.path.basename(path), name, shadow, spec["module"]))
+            return True, "%s calls %s(part=...)" % (os.path.basename(path), name)
+    if nopart:
+        return False, ("%s calls %s without a part= keyword: the output would not be "
+                       "stamped and verify_asset.py could not bind it to its part"
+                       % (os.path.basename(nopart[0]), nopart[1]))
     return False, ("no import+call of recetas.%s (%s) in %s%s"
                    % (spec["module"], "/".join(spec["calls"]),
                       os.path.basename(generator_path),
