@@ -81,6 +81,12 @@ def build_mannequin(location=(0.0, 0.0, 0.0), suffix="", material=None,
     head.data.materials.append(material)
     if smooth:
         bpy.ops.object.shade_smooth()
+    try:
+        from recetas.motor_stamp import stamp_object, SCALE_REF_PART
+    except ImportError:
+        from motor_stamp import stamp_object, SCALE_REF_PART
+    for _o in (body, head):
+        stamp_object(_o, SCALE_REF_PART, "scale_ref")
     return [body, head]
 
 

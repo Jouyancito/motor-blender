@@ -5,6 +5,10 @@
 import bpy
 import bmesh
 from mathutils import Vector
+try:
+    from recetas.motor_stamp import stamp_object as _motor_stamp
+except ImportError:  # recipes are also used with recetas/ itself on sys.path
+    from motor_stamp import stamp_object as _motor_stamp
 
 # gains: anatomical mass map (SPEC section 1) keyed by the REAL Filomeno_rig bones
 GAINS_GORDO = {
@@ -23,7 +27,7 @@ SAG = {"spine": 1.0, "root": 0.5, "neck": 0.8, "chest": 0.5}  # gravity share pe
 
 
 def engordar(obj_name="base_v2", arm_name="Filomeno_rig", gains=None, amount=0.12,
-             gravity=0.35, normal_blend=0.25, smooth_iters=3, key_name="fat_gordo"):
+             gravity=0.35, normal_blend=0.25, smooth_iters=3, key_name="fat_gordo", part=None):
     gains = gains or GAINS_GORDO
     o = bpy.data.objects[obj_name]
     arm = bpy.data.objects[arm_name]
@@ -104,6 +108,7 @@ def engordar(obj_name="base_v2", arm_name="Filomeno_rig", gains=None, amount=0.1
     moved = sum(1 for d in disp if d.length > 1e-5)
     dmax = max((d.length for d in disp), default=0)
     print(f"[engordar] key '{key_name}' -> {moved}/{n} verts moved, max disp {dmax*100:.1f}cm, amount={amount}")
+    _motor_stamp(o, part, "engordar_anatomico")
     return kb
 
 
@@ -121,7 +126,7 @@ GAINS_MACIZO = {
 
 
 def engordar_np(obj_name=None, arm_name="Filomeno_rig", gains=None, amount=0.15,
-                gravity=0.0, normal_blend=0.25, smooth_iters=3, key_name="fat_macizo"):
+                gravity=0.0, normal_blend=0.25, smooth_iters=3, key_name="fat_macizo", part=None):
     import numpy as np
     if obj_name is None:
         import json as _j, os as _o
@@ -200,4 +205,5 @@ def engordar_np(obj_name=None, arm_name="Filomeno_rig", gains=None, amount=0.15,
     me.update()
     moved = int((np.linalg.norm(disp, axis=1) > 1e-5).sum())
     print(f"[engordar_np] key '{key_name}' -> {moved}/{n} verts, max {np.linalg.norm(disp,axis=1).max()*100:.1f}cm")
+    _motor_stamp(o, part, "engordar_anatomico")
     return kb

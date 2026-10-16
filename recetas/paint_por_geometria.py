@@ -13,6 +13,10 @@
 #   stamp(g, mask, (0.38, 0.56, 0.11))
 import bpy
 import numpy as np
+try:
+    from recetas.motor_stamp import stamp_object as _motor_stamp
+except ImportError:  # recipes are also used with recetas/ itself on sys.path
+    from motor_stamp import stamp_object as _motor_stamp
 
 
 class geo:
@@ -41,8 +45,9 @@ class geo:
         return float(self.x[i]), float(self.y[i]), float(self.z[i])
 
 
-def stamp(g, mask, rgb):
+def stamp(g, mask, rgb, part=None):
     g.cols[mask, :3] = np.array(rgb, dtype=np.float32)
     g.attr.data.foreach_set('color', g.cols.reshape(-1))
     g.me.update()
+    _motor_stamp(g.obj, part, "paint_por_geometria")
     return int(mask.sum())

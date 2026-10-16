@@ -9,6 +9,10 @@
 #      cambio de relieve de la zona (el color se come la línea).
 # EXEMPLAR (sonrisa): build_ribbon(body, curve_fn=smile(ax, ay, az), width=0.006)
 import bpy
+try:
+    from recetas.motor_stamp import stamp_object as _motor_stamp
+except ImportError:  # recipes are also used with recetas/ itself on sys.path
+    from motor_stamp import stamp_object as _motor_stamp
 import math
 import numpy as np
 from mathutils import Vector, Matrix
@@ -34,7 +38,8 @@ def smile(ax, ay, az, half_w=0.058, drop=0.108, curve=0.034):
 
 
 def build_ribbon(body, curve_fn, width=0.006, proud=0.0035, nsamp=41,
-                 name='ink_ribbon', mat_name='lip_ink', ray_dir=(0, 1, 0), ray_from_y=-0.35):
+                 name='ink_ribbon', mat_name='lip_ink', ray_dir=(0, 1, 0), ray_from_y=-0.35,
+                 part=None):
     bvh = surface_bvh(body)
     pts, nrms = [], []
     for i in range(nsamp):
@@ -76,4 +81,5 @@ def build_ribbon(body, curve_fn, width=0.006, proud=0.0035, nsamp=41,
     ob.matrix_world = Matrix.Identity(4)
     for pl in me.polygons:
         pl.use_smooth = True
+    _motor_stamp(ob, part, "ribbon_tinta")
     return ob

@@ -2,7 +2,7 @@
 """start_asset.py -- the front door of every Blender modeling job.
 
     python3 tools/start_asset.py <asset_dir> "<subject description>" \
-        [--technique part=tech ...] [--allow-unknown "<reason>"]
+        --generator <gen.py> [--technique part=tech ...] [--custom part=reason] [--allow-unknown "<reason>"]
 
 What it does:
   1. Runs preflight_router.route_all() on the subject and PRINTS the rules:
@@ -34,8 +34,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from recetas.preflight_router import route_all, require_technique  # noqa: E402
+from recetas.technique_registry import REGISTRY, is_registered  # noqa: E402
 
-SCHEMA = 1
+SCHEMA = 2
+ASSET_LIST = "motor-assets.list"
 MANIFEST_REL = os.path.join("_motor", "manifest.json")
 
 
@@ -77,6 +79,13 @@ def main(argv=None):
     ap.add_argument("subject", help="what is being built, e.g. 'gato', 'pelo largo'")
     ap.add_argument("--technique", action="append", default=[], metavar="PART=TECH",
                     help="technique chosen for one part; repeat per part")
+    ap.add_argument("--generator", action="append", default=[], metavar="GEN.PY",
+                    help="the generator script(s) that build this asset (path, "
+                         "absolute or relative to asset_dir); the gate proves they "
+                         "import+call the motor implementation of every technique")
+    ap.add_argument("--custom", action="append", default=[], metavar="PART=REASON",
+                    help="part whose technique is NOT in the registry: why it is "
+                         "built by hand. The post-run verifier must still pass.")
     ap.add_argument("--allow-unknown", default="", metavar="REASON",
                     help="subject has no router entry: why is it safe anyway?")
     args = ap.parse_args(argv)
@@ -91,6 +100,31 @@ def main(argv=None):
             "declare at least one part: --technique <part>=<technique> "
             "(e.g. --technique pelo=cards_alpha). The technique is chosen BEFORE "
             "the build, not discovered after it.")
+
+    if not args.generator:
+        raise SystemExit("declare the generator: --generator <gen.py>. The gate "
+                         "reads it to prove each technique is really called.")
+    generators = [g if os.path.isabs(g) else os.path.join(asset_dir, g)
+                  for g in args.generator]
+    customs = {}
+    for item in args.custom:
+        if "=" not in item or not item.split("=", 1)[1].strip():
+            raise SystemExit("--custom wants part=reason (a written reason), got %r" % item)
+        part, why = item.split("=", 1)
+        customs[part.strip()] = why.strip()
+    for part in customs:
+        if part not in parts:
+            raise SystemExit("--custom %r has no matching --technique" % part)
+    for part, tech in parts.items():
+        if part in customs and is_registered(tech):
+            raise SystemExit("%r is a registered technique; drop --custom %s" % (tech, part))
+        if part not in customs and not is_registered(tech):
+            raise SystemExit(
+                "technique %r (part %r) has no implementation in the motor registry "
+                "(recetas/technique_registry.py). Registered: %s.\nIf you build it "
+                "by hand: --custom %s=\"<why>\"; its output must still carry the "
+                "stamps (recetas/motor_stamp.stamp_object) and pass verify_asset.py."
+                % (tech, part, ", ".join(sorted(REGISTRY)), part))
 
     # 1. rules
     matches = route_all(subject)
@@ -121,6 +155,8 @@ def main(argv=None):
                           allow_unknown=bool(args.allow_unknown.strip()),
                           reason=args.allow_unknown)
         checked[part] = {"technique": tech, "validated_against": scope}
+        if part in customs:
+            checked[part].update(custom=True, custom_reason=customs[part])
         print("  OK  %s = %s  (checked against %r)" % (part, tech, scope))
 
     # 4. manifest
@@ -137,6 +173,7 @@ def main(argv=None):
              "discarded": sorted(r.data.get("discarded", {})),
              "must_read": r.data.get("must_read", [])}
             for r in matches],
+        "generators": generators,
         "parts": checked,
     }
     out_dir = os.path.join(asset_dir, "_motor")
@@ -145,7 +182,21 @@ def main(argv=None):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+    # Register the asset dir so the Stop gate (motor-verify-gate.py) knows it.
+    lst = os.path.join(os.environ.get("MOTOR_GATE_LOG_DIR")
+                       or os.path.expanduser("~/.claude/hooks"), ASSET_LIST)
+    try:
+        os.makedirs(os.path.dirname(lst), exist_ok=True)
+        known = open(lst).read().split("\n") if os.path.isfile(lst) else []
+        if asset_dir not in known:
+            with open(lst, "a", encoding="utf-8") as fh:
+                fh.write(asset_dir + "\n")
+    except OSError as e:
+        print("  WARNING: could not register asset dir for the Stop gate: %s" % e)
     print("\n  MANIFEST written: %s" % path)
+    print("  AFTER building, run: python3 %s/tools/verify_asset.py <file.blend> %s"
+          % (REPO, path))
+    print("  (every recipe call needs part=<declared part> so its output is stamped)")
     print("  Blender runs for this asset are now unblocked. Build THROUGH the "
           "motor (motor_run.py + gates); the manifest only proves the declaration.")
     return 0

@@ -10,9 +10,13 @@
 # EXEMPLAR: glue_to_surface(bpy.data.objects['mouth_lip'], body, proud=0.0035)
 import bpy
 from mathutils.bvhtree import BVHTree
+try:
+    from recetas.motor_stamp import stamp_object as _motor_stamp
+except ImportError:  # recipes are also used with recetas/ itself on sys.path
+    from motor_stamp import stamp_object as _motor_stamp
 
 
-def glue_to_surface(obj, body, proud=0.0030):
+def glue_to_surface(obj, body, proud=0.0030, part=None):
     deps = bpy.context.evaluated_depsgraph_get()
     bev = body.evaluated_get(deps)
     bme = bev.to_mesh()
@@ -30,4 +34,5 @@ def glue_to_surface(obj, body, proud=0.0030):
         v.co = mwi @ (loc + nrm * proud)
         moved += 1
     obj.data.update()
+    _motor_stamp(obj, part, "bvh_glue")
     return moved
