@@ -51,6 +51,7 @@ UNREGISTERED_RECIPES = {
     "biome_stem/biome_mass/biome_facet/biome_vcol/biome_ao": "bmesh helpers; the object belongs to the caller",
     "material_swatch/mesh_quality/physics/gltf_check/rubric/views/use_size": "gates and probes, not construction techniques",
     "probe_with_control": "measurement helper (a ProbeSet of Report rows), builds nothing -> nothing to stamp",
+    "bake_shading_check": "gate (la luz hace la sombra): colour-vs-occlusion correlation, a Report, builds nothing",
     "evaluated_mesh": "read-only measurement of the evaluated mesh (morphed_coords/masks_muted), builds nothing",
 }
 

@@ -534,6 +534,51 @@ def main():
     check("surface_decal: honours the target's matrix_world (decal rides a moved/rotated target)",
           abs(np.linalg.norm(wp, axis=1).mean() - 1.0) < 0.01)
 
+    from recetas import bake_shading_check as bsc
+
+    def pit_surface(paint):
+        """40x40 grid with a Gaussian pit and raised rim (real occlusion variance). `paint`
+        maps (x, y, z) -> luma, written to a FLOAT_COLOR corner layer."""
+        fresh()
+        bm = bmesh.new()
+        bmesh.ops.create_grid(bm, x_segments=40, y_segments=40, size=1.0)
+        for v in bm.verts:
+            r2 = v.co.x ** 2 + v.co.y ** 2
+            v.co.z = -0.35 * math.exp(-r2 / 0.08) + 0.12 * math.exp(-((math.sqrt(r2) - 0.45) / 0.1) ** 2)
+        bm.normal_update()
+        lay = bm.loops.layers.float_color.new("Col")
+        for f in bm.faces:
+            for l in f.loops:
+                g = paint(*l.vert.co)
+                l[lay] = (g, g, g, 1.0)
+        ob = obj_from(bm, "pit")
+        return ob
+
+    rs2 = np.random.RandomState(4)
+    stain = lambda x, y, z: 0.5 + 0.1 * math.sin(37.0 * x + 11.0 * y) * math.cos(23.0 * y - 5.0 * x)
+    painted_shadow = lambda x, y, z: 0.55 + 1.2 * z        # dark in the pit, bright on the rim: baked AO
+    rep = bsc.bake_shading_check(pit_surface(stain))
+    check("bake_shading_check known-PASS fixture: position-noise stains on a pitted surface -> PASS",
+          rep.verdict() == PASS, rep.rows)
+    rep = bsc.bake_shading_check(pit_surface(painted_shadow))
+    check("bake_shading_check known-FAIL fixture: luma painted by depth (baked shadow) -> FAIL",
+          rep.verdict() == FAIL and "r(luma" in rep.rows[0]["detail"], rep.rows)
+    rep = bsc.bake_shading_check(pit_surface(lambda x, y, z: 0.5))
+    check("bake_shading_check control: a single flat colour is NOT_TESTED, never PASS",
+          rep.verdict() == "NOT_TESTED", rep.rows)
+    rep = bsc.bake_shading_check(pit_surface(painted_shadow), ray_len=1e-9)
+    check("bake_shading_check control: rays that cannot hit anything (blind instrument) -> NOT_TESTED, not a clean PASS",
+          rep.verdict() == "NOT_TESTED", rep.rows)
+    rep = bsc.bake_shading_check(pit_surface(painted_shadow), attr_name="nope")
+    check("bake_shading_check control: missing colour attribute -> NOT_TESTED", rep.verdict() == "NOT_TESTED")
+    flat = pit_surface(stain)
+    for v in flat.data.vertices:
+        v.co.z = 0.0
+    flat.data.update()
+    rep = bsc.bake_shading_check(flat)
+    check("bake_shading_check control: a flat plane has no occlusion to correlate with -> NOT_TESTED",
+          rep.verdict() == "NOT_TESTED", rep.rows)
+
     ok = sum(1 for _, c in results if c)
     print("\nBLENDER_RESULT %d %d" % (ok, len(results)))
     if ok != len(results):

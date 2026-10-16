@@ -1890,6 +1890,29 @@ def test_probe_with_control():
             check("truth table ok=%s control_fired=%s -> %s" % (ok, fired, want), st(q) == want)
 
 
+def test_bake_shading_pure():
+    print("\nbake_shading_check (pure judge)")
+    import random as _r
+    from recetas import bake_shading_check as bsc
+    from recetas.verdict import PASS as P, FAIL as F, NOT_TESTED as NT
+    rs = _r.Random(2)
+    xs = [rs.random() for _ in range(400)]
+    painted = [0.8 - 0.6 * x + 0.02 * rs.random() for x in xs]        # shadow painted where occluded
+    stains = [0.5 + 0.1 * rs.random() for _ in xs]                    # position noise, uncorrelated
+    st = lambda ys: bsc.judge(xs, ys)[0].report.rows[-1]["state"]
+    check("known-FAIL: luma = 0.8 - 0.6 * occlusion (baked shadow) -> FAIL", st(painted) == F)
+    check("known-PASS: uncorrelated stains -> PASS (control fired)", st(stains) == P)
+    check("flat colour (no luma variance) -> NOT_TESTED, not PASS", st([0.5] * len(xs)) == NT)
+    flat_occ = bsc.judge([0.0] * 400, stains)[0].report.rows[-1]["state"]
+    check("blind instrument: occlusion all zero (rays never hit anything) -> NOT_TESTED, not PASS", flat_occ == NT)
+    check("too few samples (10) -> NOT_TESTED", bsc.judge(xs[:10], stains[:10])[0].report.rows[-1]["state"] == NT)
+    r, rc = bsc.judge(xs, stains)[1:]
+    check("the in-gate control reads strongly negative (r_ctrl = %.3f) while stains read ~0 (r = %.3f)" % (rc, r),
+          rc < -0.9 and abs(r) < 0.15)
+    check("pearson: perfect line = 1, constant = None",
+          abs(bsc.pearson([1, 2, 3], [2, 4, 6]) - 1) < 1e-9 and bsc.pearson([1, 1, 1], [1, 2, 3]) is None)
+
+
 def main():
     print("FIXTURES ADVERSARIALES -- cada gate contra un caso que DEBE fallar")
     test_verdict()
@@ -1908,6 +1931,7 @@ def main():
     test_rubric()
     test_registry_integrity()
     test_probe_with_control()
+    test_bake_shading_pure()
     test_blender_suite()
 
     failed = [n for n, ok, _ in _results if not ok]
